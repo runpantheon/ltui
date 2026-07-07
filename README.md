@@ -21,6 +21,10 @@ Your whole workspace, grouped the way triage actually works —
 
 ---
 
+> [!NOTE]
+> **on Linear instead of Jira?** jtui has a twin: [**ltui**](https://github.com/Gheat1/ltui) —
+> same app, same speed, same themes, pointed at Linear (and battle-tested daily).
+
 ## why another Jira TUI?
 
 Because every Jira TUI I tried had the same two problems: **slow** and **ugly**.
