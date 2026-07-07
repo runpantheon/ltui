@@ -6,3 +6,4 @@ build/
 .venv/
 venv/
 assets/*.svg
+CLAUDE.md
