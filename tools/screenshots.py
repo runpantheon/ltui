@@ -226,6 +226,18 @@ async def open_settings(app, pilot):
     await pilot.press("comma")
 
 
+async def onboard_shot(name, size=(148, 41)):
+    patch("mocha")
+    def no_key():
+        raise FileNotFoundError("no key configured")
+    mod.load_api_key = no_key
+    app = DemoApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause(0.6)
+        app.save_screenshot(str(ASSETS / f"{name}.svg"))
+    print(f"  \u2713 {name}.svg")
+
+
 async def open_themes(app, pilot):
     app.action_change_theme()
     await pilot.pause(0.3)
@@ -242,6 +254,7 @@ async def main():
     await shot("comment", size=(148, 41), drive=open_comment)
     await shot("settings", size=(148, 41), drive=open_settings)
     await shot("themes", size=(148, 41), drive=open_themes)
+    await onboard_shot("onboard")
     await shot("theme-void", size=(148, 41), theme="void")
     await shot("theme-onyx", size=(148, 41), theme="onyx")
     print("done — convert with: for f in assets/*.svg; rsvg-convert -w 1600 $f -o (string replace .svg .png $f); end")

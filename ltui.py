@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 import json
 import sys
@@ -27,6 +27,7 @@ from textual.widgets.option_list import Option
 
 API_URL = "https://api.linear.app/graphql"
 CONFIG = Path.home() / ".config/linear-cli/config.toml"
+LTUI_CONFIG = Path.home() / ".config/ltui/config.toml"
 STATE_FILE = Path.home() / ".local/state/ltui/state.json"
 CACHE_DIR = Path.home() / ".cache/ltui"
 
@@ -224,8 +225,38 @@ def load_api_key() -> str:
 
     if key := os.environ.get("LINEAR_API_KEY"):
         return key
+    try:
+        if key := tomllib.loads(LTUI_CONFIG.read_text()).get("api_key"):
+            return key
+    except Exception:
+        pass
     cfg = tomllib.loads(CONFIG.read_text())
     return cfg["workspaces"][cfg.get("current", "default")]["api_key"]
+
+
+def save_api_key(key: str) -> None:
+    LTUI_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    LTUI_CONFIG.write_text(f'api_key = "{key}"\n')
+    LTUI_CONFIG.chmod(0o600)
+
+
+async def verify_key(key: str) -> str:
+    """Check a key against the API; returns 'viewer @ org' or raises."""
+    async with httpx.AsyncClient(
+        headers={"Authorization": key, "Content-Type": "application/json"},
+        timeout=15,
+    ) as client:
+        resp = await client.post(
+            API_URL,
+            json={
+                "query": "query { viewer { displayName } organization { name } }"
+            },
+        )
+        data = resp.json()
+        if data.get("errors"):
+            raise RuntimeError(data["errors"][0].get("message", "invalid key"))
+        d = data["data"]
+        return f"{d['viewer']['displayName']} @ {d['organization']['name']}"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -499,6 +530,69 @@ class NewTicketModal(ModalScreen):
 
 
 # ── app ───────────────────────────────────────────────────────────────────
+class OnboardModal(ModalScreen):
+    """First-run setup: paste a Linear API key, validate it live, save it."""
+
+    BINDINGS = [Binding("escape", "quit_app", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="onboard-box"):
+            yield Static(
+                f"[bold {C_BLUE}]\uf022  welcome to ltui[/]", id="onboard-title"
+            )
+            yield Static(
+                f"[{C_SUB}]ltui talks to Linear with a personal API key.[/]\n\n"
+                f"[{C_DIM}]1.[/] [{C_SUB}]open[/] "
+                f"[@click=screen.open_keys][{C_BLUE}]linear.app/settings/api[/][/] "
+                f"[{C_DIM}](click it)[/]\n"
+                f"[{C_DIM}]2.[/] [{C_SUB}]create a personal API key[/]\n"
+                f"[{C_DIM}]3.[/] [{C_SUB}]paste it below and hit enter[/]",
+                id="onboard-body",
+            )
+            yield Input(placeholder="lin_api_\u2026", password=True, id="onboard-key")
+            yield Static("", id="onboard-status")
+            with Horizontal(id="onboard-actions"):
+                yield Static(
+                    f"[{C_VFAINT}]saved to ~/.config/ltui/config.toml\n"
+                    f"also works: LINEAR_API_KEY env, linear-cli auth[/]",
+                    id="onboard-hint",
+                )
+                yield Button("\uf1e6 connect", variant="primary", id="onboard-connect")
+
+    def on_mount(self) -> None:
+        self.query_one("#onboard-key").focus()
+
+    def action_open_keys(self) -> None:
+        webbrowser.open("https://linear.app/settings/api")
+
+    def action_quit_app(self) -> None:
+        self.app.exit()
+
+    @on(Input.Submitted, "#onboard-key")
+    def _submitted(self) -> None:
+        self._connect()
+
+    @on(Button.Pressed, "#onboard-connect")
+    def _pressed(self) -> None:
+        self._connect()
+
+    @work(exclusive=True, group="verify")
+    async def _connect(self) -> None:
+        status = self.query_one("#onboard-status", Static)
+        key = self.query_one("#onboard-key", Input).value.strip()
+        if not key:
+            status.update(f"[{C_PEACH}]paste a key first[/]")
+            return
+        status.update(f"[{C_DIM}]\uf017 checking\u2026[/]")
+        try:
+            who = await verify_key(key)
+        except Exception as e:
+            status.update(f"[{C_RED}]\uf057 {escape(str(e))}[/]")
+            return
+        status.update(f"[{C_GREEN}]\uf058 connected \u2014 {escape(who)}[/]")
+        self.dismiss(key)
+
+
 class ThemeModal(ModalScreen):
     """Theme picker — highlighting a theme previews it live."""
 
@@ -734,6 +828,20 @@ class LTUI(App):
     #ticket-hint {{ width: 1fr; padding: 1 0; }}
     #ticket-actions Button {{ margin: 0 0 0 2; min-width: 10; }}
 
+    OnboardModal {{ align: center middle; background: $ltui-overlay; }}
+    #onboard-box {{
+        width: 62; height: auto;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
+    }}
+    #onboard-title {{ padding: 0 0 1 0; }}
+    #onboard-body {{ padding: 0 0 1 0; }}
+    #onboard-key {{ border: round {C_VFAINT}; background: transparent; }}
+    #onboard-key:focus {{ border: round {C_FAINT}; }}
+    #onboard-status {{ height: 1; padding: 0 1; margin: 1 0 0 0; }}
+    #onboard-actions {{ height: 3; margin: 1 0 0 0; }}
+    #onboard-hint {{ width: 1fr; }}
+    #onboard-actions Button {{ margin: 0 0 0 2; min-width: 12; }}
+
     ThemeModal {{ align: center middle; background: $ltui-overlay; }}
     #theme-box {{
         width: 40; height: auto; max-height: 85%;
@@ -845,9 +953,21 @@ class LTUI(App):
         self.query_one("#issues").focus()
         try:
             key = load_api_key()
-        except Exception as e:
-            self.notify(f"couldn't load API key: {e}", severity="error", timeout=10)
+        except Exception:
+            def connected(new_key: str | None) -> None:
+                if not new_key:
+                    return
+                try:
+                    save_api_key(new_key)
+                except Exception as e:
+                    self.notify(f"couldn't save key: {e}", severity="error")
+                self._start(new_key)
+
+            self.push_screen(OnboardModal(), connected)
             return
+        self._start(key)
+
+    def _start(self, key: str) -> None:
         self.client = httpx.AsyncClient(
             headers={"Authorization": key, "Content-Type": "application/json"},
             timeout=20,
@@ -1431,8 +1551,8 @@ HELP = """ltui - a fast, clean TUI for Linear   https://github.com/Gheat1/ltui
 
 usage: ltui [--version] [--help]
 
-auth: LINEAR_API_KEY env var, or linear-cli's config
-      (~/.config/linear-cli/config.toml)
+auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
+      linear-cli's config. no key? ltui asks on first launch.
 
 keys: enter open ticket   n new   s status   p priority   c comment
       o browser   / filter   m mine only   t theme   , settings

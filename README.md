@@ -98,19 +98,21 @@ upgrading later: `uv tool upgrade ltui-linear` / `pipx reinstall ltui-linear`
 
 ## auth
 
-ltui looks for a Linear API key in two places, in order:
+**there is nothing to set up.** launch `ltui` and if no key is found, it
+walks you through it: click the link to Linear's API-keys page, paste the
+key, done — ltui validates it live and stores it in
+`~/.config/ltui/config.toml` (permissions `600`).
+
+<div align="center">
+<img src="assets/onboard.png" alt="first-run onboarding" width="70%">
+</div>
+
+already set up somewhere? ltui checks, in order:
 
 1. the `LINEAR_API_KEY` environment variable
-2. your existing [linear-cli](https://github.com/Finesssee/linear-cli) config
-   (`~/.config/linear-cli/config.toml`) — if you already use linear-cli,
-   **ltui works with zero setup**
-
-No linear-cli? Grab a personal API key from
-**Linear → Settings → Security & access → API keys** and:
-
-```sh
-export LINEAR_API_KEY="lin_api_..."   # add to your shell profile
-```
+2. its own `~/.config/ltui/config.toml`
+3. your [linear-cli](https://github.com/Finesssee/linear-cli) config — if you
+   already use linear-cli, ltui logs in with zero setup
 
 Your key never leaves your machine — ltui talks directly to
 `api.linear.app` and nothing else.
