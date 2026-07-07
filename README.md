@@ -177,6 +177,11 @@ And the fourth one can't be screenshotted honestly: **`clear`** paints **no
 background at all** — ltui runs on your terminal's own background, so if your
 terminal is transparent or blurred, ltui is too. Made for rice.
 
+Not enough? The settings panel (`,`) also lists **every built-in Textual
+theme** — nord, gruvbox, dracula, tokyo-night, rose-pine, the whole catppuccin
+family and more — all with live preview. `t` keeps cycling the four ltui
+themes; anything else you pick sticks until you change it.
+
 ## how it's fast
 
 Linear's API is the bottleneck — a 250-issue team takes **2.5–4.5s** to fetch,

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 import json
 import sys
@@ -18,6 +18,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
@@ -58,6 +59,7 @@ THEMES = [
             "ltui-border-focus": C_BLUE,
             "ltui-border-detail": C_LAV,
             "ltui-modal-bg": "#181825",
+            "ltui-cursor": "#3e4869",
             "ltui-overlay": "black 40%",
         },
     ),
@@ -71,6 +73,7 @@ THEMES = [
             "ltui-border-focus": C_BLUE,
             "ltui-border-detail": C_LAV,
             "ltui-modal-bg": "#0a0a10",
+            "ltui-cursor": "#1e2a4a",
             "ltui-overlay": "black 40%",
         },
     ),
@@ -84,6 +87,7 @@ THEMES = [
             "ltui-border-focus": "#9aa5b5",
             "ltui-border-detail": "#b8c0cc",
             "ltui-modal-bg": "#141419",
+            "ltui-cursor": "#2b303b",
             "ltui-overlay": "black 40%",
         },
     ),
@@ -99,6 +103,7 @@ THEMES = [
             "ltui-border-focus": C_BLUE,
             "ltui-border-detail": C_LAV,
             "ltui-modal-bg": "#181825",
+            "ltui-cursor": "#2c3a5e",
             "ltui-overlay": "transparent",
         },
     ),
@@ -474,15 +479,26 @@ class SettingsModal(ModalScreen):
         ol = self.query_one("#settings-list", NavList)
         prev = ol.highlighted
         ol.clear_options()
-        opts: list[Option] = [
-            Option(Text(" theme", style=f"bold {C_SUB}"), disabled=True)
-        ]
-        for name in THEME_NAMES:
+        def theme_row(name: str) -> Option:
             active = app.theme == name
             row = Text("   ")
             row.append("● " if active else "○ ", style=C_BLUE if active else C_DIM)
             row.append(name, style=C_TEXT if active else C_SUB)
-            opts.append(Option(row, id=f"theme:{name}"))
+            return Option(row, id=f"theme:{name}")
+
+        opts: list[Option] = [
+            Option(Text(" theme", style=f"bold {C_SUB}"), disabled=True)
+        ]
+        for name in THEME_NAMES:
+            opts.append(theme_row(name))
+        extra = sorted(n for n in app.available_themes if n not in THEME_NAMES)
+        if extra:
+            opts.append(Option(Text(" "), disabled=True))
+            opts.append(
+                Option(Text(" more themes", style=f"bold {C_SUB}"), disabled=True)
+            )
+            for name in extra:
+                opts.append(theme_row(name))
         opts.append(Option(Text(" "), disabled=True))
         opts.append(Option(Text(" preferences", style=f"bold {C_SUB}"), disabled=True))
         mine = getattr(app, "_mine", False)
@@ -577,6 +593,13 @@ class LTUI(App):
         scrollbar-size-vertical: 1;
     }}
     OptionList:focus {{ background: transparent; border: none; }}
+    OptionList > .option-list--option-highlighted {{ background: $ltui-cursor; }}
+    OptionList:focus > .option-list--option-highlighted {{ background: $ltui-cursor; }}
+
+    CommandPalette {{ background: $ltui-overlay; }}
+    CommandPalette > Vertical {{ width: 70; max-width: 85%; }}
+    CommandPalette #--input {{ background: $ltui-modal-bg; }}
+    CommandPalette CommandList {{ background: $ltui-modal-bg; }}
 
     #filter {{ display: none; height: 3; border: round $ltui-border; background: transparent; }}
     #filter.visible {{ display: block; }}
@@ -656,6 +679,15 @@ class LTUI(App):
         self._opt_index: dict[str, int] = {}
         self._issue_by_id: dict[str, dict] = {}
 
+    def _theme_is_ansi(self) -> bool:
+        theme = self.available_themes.get(self.theme)
+        if theme is None or theme.background is None:
+            return False
+        try:
+            return TColor.parse(theme.background).ansi is not None
+        except Exception:
+            return False
+
     def get_css_variables(self) -> dict[str, str]:
         # ltui-* variables must exist even before our themes are registered
         # (the stylesheet is parsed while the default textual theme is active)
@@ -688,14 +720,14 @@ class LTUI(App):
     def on_mount(self) -> None:
         for t in THEMES:
             self.register_theme(t)
-        # "clear" uses ansi_default colors; ansi_color mode passes them
-        # through untranslated so the terminal's own background shows
+        # ansi-background themes (clear, ansi-dark, …) need ansi_color mode
+        # so default-color codes pass through and the terminal bg shows
         self.theme_changed_signal.subscribe(
-            self, lambda _t: setattr(self, "ansi_color", self.theme == "clear")
+            self, lambda _t: setattr(self, "ansi_color", self._theme_is_ansi())
         )
         saved = load_state().get("theme")
-        self.theme = saved if saved in THEME_NAMES else THEME_NAMES[0]
-        self.ansi_color = self.theme == "clear"
+        self.theme = saved if saved in self.available_themes else THEME_NAMES[0]
+        self.ansi_color = self._theme_is_ansi()
         self.query_one("#teams").border_title = " teams "
         self.query_one("#profile").border_title = " you "
         self.query_one("#centre").border_title = " issues "
