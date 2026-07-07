@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ltui"
+name = "ltui-linear"
 version = "0.2.0"
 description = "A fast, beautiful TUI for Linear — grouped by status, instant startup, full keyboard + mouse control"
 readme = "README.md"

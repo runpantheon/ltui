@@ -53,15 +53,24 @@ launch. ltui doesn't:
 
 ## install
 
+**arch, btw** — from the [AUR](https://aur.archlinux.org/packages/ltui):
+
 ```sh
-# pipx (recommended)
+yay -S ltui
+```
+
+**any linux · macOS · windows** — with [pipx](https://pipx.pypa.io) or [uv](https://docs.astral.sh/uv/):
+
+```sh
+pipx install ltui-linear      # or: uv tool install ltui-linear
+```
+
+<sub>the PyPI name <code>ltui</code> was taken — the command is still <code>ltui</code></sub>
+
+**bleeding edge** — straight from main:
+
+```sh
 pipx install git+https://github.com/Gheat1/ltui
-
-# or uv
-uv tool install git+https://github.com/Gheat1/ltui
-
-# or from source
-git clone https://github.com/Gheat1/ltui && cd ltui && pip install .
 ```
 
 then just:
@@ -70,9 +79,22 @@ then just:
 ltui
 ```
 
+<details>
+<summary><b>platform notes</b></summary>
+
+- **linux** — any terminal that isn't from 1985 works: kitty, alacritty,
+  ghostty, wezterm, foot…
+- **macOS** — `brew install pipx` first if you don't have it. iTerm2, ghostty,
+  kitty, or WezTerm recommended over stock Terminal.app.
+- **windows** — Python 3.11+ (`winget install Python.Python.3.12`), then pipx.
+  Run it in **Windows Terminal** — legacy conhost will not do it justice.
+- everywhere: needs **python ≥ 3.11**.
+
+</details>
+
 > [!TIP]
 > Use a terminal with a [nerd font](https://www.nerdfonts.com/) for the icons.
-> Any modern terminal (kitty, alacritty, ghostty, wezterm, foot…) will do.
+> Everything else degrades gracefully without one.
 
 ## auth
 
