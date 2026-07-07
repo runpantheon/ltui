@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 import json
 import sys
@@ -78,6 +78,12 @@ THEMES = [
             "ltui-modal-bg": "#181825",
             "ltui-cursor": "#3e4869",
             "ltui-overlay": "black 40%",
+            "scrollbar": "#313244",
+            "scrollbar-hover": "#45475a",
+            "scrollbar-active": "#585b70",
+            "scrollbar-background": "#181825",
+            "screen-selection-background": "#b4befe 35%",
+            "input-selection-background": "#b4befe 35%",
         },
     ),
     Theme(
@@ -92,6 +98,12 @@ THEMES = [
             "ltui-modal-bg": "#0a0a10",
             "ltui-cursor": "#1e2a4a",
             "ltui-overlay": "black 40%",
+            "scrollbar": "#1e1e28",
+            "scrollbar-hover": "#2c2c38",
+            "scrollbar-active": "#3c3c4a",
+            "scrollbar-background": "#0a0a10",
+            "screen-selection-background": "#b4befe 30%",
+            "input-selection-background": "#b4befe 30%",
         },
     ),
     Theme(
@@ -106,6 +118,12 @@ THEMES = [
             "ltui-modal-bg": "#141419",
             "ltui-cursor": "#2b303b",
             "ltui-overlay": "black 40%",
+            "scrollbar": "#2a2a32",
+            "scrollbar-hover": "#3a3a44",
+            "scrollbar-active": "#4a4a56",
+            "scrollbar-background": "#131317",
+            "screen-selection-background": "#b8c0cc 30%",
+            "input-selection-background": "#b8c0cc 30%",
         },
     ),
     # no background at all — the terminal's own background (and any
@@ -122,6 +140,12 @@ THEMES = [
             "ltui-modal-bg": "#16161d",
             "ltui-cursor": "#282c38",
             "ltui-overlay": "transparent",
+            "scrollbar": "#3c3f4a",
+            "scrollbar-hover": "#4a4e5a",
+            "scrollbar-active": "#5a5f6d",
+            "scrollbar-background": "transparent",
+            "screen-selection-background": "#3f4655",
+            "input-selection-background": "#3f4655",
         },
     ),
     # your terminal's own ANSI palette + no background: a custom kitty /
@@ -139,6 +163,13 @@ THEMES = [
             "ltui-modal-bg": "ansi_black",
             "ltui-cursor": "ansi_bright_black",
             "ltui-overlay": "transparent",
+            "scrollbar": "ansi_bright_black",
+            "scrollbar-hover": "ansi_bright_black",
+            "scrollbar-active": "ansi_blue",
+            "scrollbar-background": "ansi_default",
+            "screen-selection-background": "ansi_cyan",
+            "screen-selection-foreground": "ansi_black",
+            "input-selection-background": "ansi_cyan",
         },
     ),
 ]
