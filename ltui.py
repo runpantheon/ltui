@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 import json
 import sys
@@ -128,7 +128,9 @@ ISSUE_FIELDS = """
         updatedAt createdAt
         state { id name color type position }
         assignee { id displayName }
-        labels { nodes { name color } }
+        labels(first: 6) { nodes { name color } }
+        relations(first: 6) { nodes { type relatedIssue { identifier } } }
+        inverseRelations(first: 6) { nodes { type issue { identifier } } }
 """
 
 QL_BOOT = """
@@ -242,6 +244,21 @@ def priority_cell(p: int) -> Text:
     else:
         t.append("···", style=C_VFAINT)
     return t
+
+
+def block_info(issue: dict) -> tuple[list[str], list[str]]:
+    """Identifiers this issue is blocked by, and identifiers it blocks."""
+    blocked_by = [
+        r["issue"]["identifier"]
+        for r in (issue.get("inverseRelations") or {}).get("nodes", [])
+        if r["type"] == "blocks"
+    ]
+    blocks = [
+        r["relatedIssue"]["identifier"]
+        for r in (issue.get("relations") or {}).get("nodes", [])
+        if r["type"] == "blocks"
+    ]
+    return blocked_by, blocks
 
 
 def priority_name(p: int) -> str:
@@ -803,13 +820,12 @@ class LTUI(App):
         self.load_team(team)
 
     def _save_state(self) -> None:
-        save_state(
-            {
-                "team_id": self._team["id"] if self._team else None,
-                "mine": self._mine,
-                "theme": self.theme,
-            }
-        )
+        data = load_state()
+        if self._team is not None:
+            data["team_id"] = self._team["id"]
+        data["mine"] = self._mine
+        data["theme"] = self.theme
+        save_state(data)
 
     def _write_team_cache(self) -> None:
         if self._team is not None:
@@ -1053,15 +1069,23 @@ class LTUI(App):
         assignee = assignee.split()[0][:10] if assignee else "—"
         time_s = rel_time(issue["updatedAt"])
         labels = issue["labels"]["nodes"][:3]
+        blocked_by, blocks = block_info(issue)
+        badges = []
+        if blocked_by:
+            badges.append((" \uf056", C_RED))  # blocked by something
+        if blocks:
+            badges.append((" \uf06a", C_PEACH))  # blocking something
 
         right_w = 3 + 2 + 10 + 2 + 4  # prio, gap, assignee, gap, time
         title_w = width - 2 - id_w - 1 - right_w - 1
-        dots_w = len(labels) * 2
+        dots_w = len(labels) * 2 + len(badges) * 2
         title = issue["title"]
         avail = max(title_w - dots_w, 8)
         if len(title) > avail:
             title = title[: avail - 1] + "…"
         t.append(title, style=C_TEXT)
+        for badge, color in badges:
+            t.append(badge, style=color)
         for lb in labels:
             t.append(" ●", style=lb["color"] or C_DIM)
         pad = title_w - len(title) - dots_w
@@ -1111,6 +1135,17 @@ class LTUI(App):
             for lb in labels:
                 m.append(" ", style=lb["color"] or C_DIM)
                 m.append(f"{lb['name']}  ", style=C_SUB)
+        blocked_by, blocks = block_info(issue)
+        if blocked_by or blocks:
+            m.append("\n")
+            if blocked_by:
+                m.append("\uf056 ", style=C_RED)
+                m.append("blocked by " + " \u00b7 ".join(blocked_by), style=C_RED)
+            if blocked_by and blocks:
+                m.append("   ")
+            if blocks:
+                m.append("\uf06a ", style=C_PEACH)
+                m.append("blocks " + " \u00b7 ".join(blocks), style=C_PEACH)
         m.append("\n")
         m.append(" ", style=C_DIM)
         m.append(
@@ -1274,9 +1309,24 @@ class LTUI(App):
             self.notify(f" opened {issue['identifier']}")
 
 
+HELP = """ltui - a fast, clean TUI for Linear   https://github.com/Gheat1/ltui
+
+usage: ltui [--version] [--help]
+
+auth: LINEAR_API_KEY env var, or linear-cli's config
+      (~/.config/linear-cli/config.toml)
+
+keys: enter open ticket   n new   s status   p priority   c comment
+      o browser   / filter   m mine only   t theme   , settings
+      j/k navigate   g/G top/bottom   r refresh   q quit"""
+
+
 def main() -> None:
     if "--version" in sys.argv or "-v" in sys.argv:
         print(f"ltui {__version__}")
+        return
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(f"ltui {__version__}\n{HELP}")
         return
     LTUI().run()
 

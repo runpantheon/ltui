@@ -45,6 +45,7 @@ launch. ltui doesn't:
 | 👤  | **mine first** — your tickets float to the top of every group; press `m` to hide everyone else entirely |
 | 📖  | **rich detail panel** — full markdown descriptions (code blocks, checklists, quotes), labels, comments — scrolls with arrows, vim keys, or mouse wheel |
 | ✏️  | **write, don't just read** — create tickets, change status & priority, add comments without leaving the terminal |
+| 🚧  | **blocked & blocking at a glance** — a red badge on tickets that are blocked, an orange one on tickets holding others up; the detail panel names the exact tickets |
 | 🔍  | **instant filter** — `/` fuzzy-narrows by title, identifier, or assignee as you type |
 | 🌚  | **four themes** — `mocha`, pure-black `void`, monochrome `onyx`, and `clear` (no background — your terminal's transparency/blur shows through) — cycle with `t` |
 | ⚙️  | **profile & settings** — who you are bottom-left, `,` opens a settings panel with live theme preview, preferences, and cache controls |
@@ -254,6 +255,14 @@ python -m venv .venv && .venv/bin/pip install -e . && .venv/bin/ltui
 ```
 
 PRs welcome — keep it fast, keep it pretty.
+
+## credits
+
+made by [**@Gheat1**](https://github.com/Gheat1) — issues, ideas, and PRs
+welcome over at [Gheat1/ltui](https://github.com/Gheat1/ltui).
+
+standing on the shoulders of [textual](https://github.com/Textualize/textual)
+and the [Linear API](https://developers.linear.app).
 
 ## license
 

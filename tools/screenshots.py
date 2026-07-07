@@ -97,7 +97,8 @@ COMMENTS = [
 ]
 
 
-def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=None):
+def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=None,
+          blocks=(), blocked_by=()):
     return {
         "id": f"i-{num}",
         "identifier": f"CORE-{num}",
@@ -110,16 +111,22 @@ def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=No
         "state": ST[state],
         "assignee": assignee,
         "labels": {"nodes": labels},
+        "relations": {"nodes": [
+            {"type": "blocks", "relatedIssue": {"identifier": b}} for b in blocks
+        ]},
+        "inverseRelations": {"nodes": [
+            {"type": "blocks", "issue": {"identifier": b}} for b in blocked_by
+        ]},
     }
 
 
 ISSUES = [
     # in review
-    issue(128, "Split sync engine into per-entity pipelines", "st-ir", 1, NOVA, [L_INFRA], 3, desc=DESC),
-    issue(131, "Rate-limit invite spam from unverified workspaces", "st-ir", 2, KAI, [L_BUG], 6),
+    issue(128, "Split sync engine into per-entity pipelines", "st-ir", 1, NOVA, [L_INFRA], 3, desc=DESC, blocked_by=["CORE-134"]),
+    issue(131, "Rate-limit invite spam from unverified workspaces", "st-ir", 2, KAI, [L_BUG], 6, blocked_by=["CORE-130"]),
     issue(119, "New onboarding checklist — empty states + confetti", "st-ir", 3, REI, [L_UX, L_FEAT], 11),
     # in progress
-    issue(134, "Streaming exports: cursor pagination for 1M+ row tables", "st-ip", 1, NOVA, [L_FEAT], 1),
+    issue(134, "Streaming exports: cursor pagination for 1M+ row tables", "st-ip", 1, NOVA, [L_FEAT], 1, blocks=["CORE-128"]),
     issue(133, "Fix flaky websocket reconnect on laptop sleep", "st-ip", 2, NOVA, [L_BUG], 4),
     issue(127, "Migrate search to the new tokenizer", "st-ip", 2, KAI, [L_INFRA], 9),
     issue(125, "Command palette: fuzzy match on ticket identifiers", "st-ip", 3, REI, [L_FEAT, L_UX], 14),
@@ -127,7 +134,7 @@ ISSUES = [
     # todo
     issue(136, "Zero-downtime schema migration runbook", "st-td", 2, NOVA, [L_INFRA], 5),
     issue(135, "Keyboard shortcut cheatsheet overlay", "st-td", 3, REI, [L_UX], 8),
-    issue(130, "Dedupe webhook deliveries on retry storms", "st-td", 3, None, [L_BUG, L_INFRA], 30),
+    issue(130, "Dedupe webhook deliveries on retry storms", "st-td", 3, None, [L_BUG, L_INFRA], 30, blocks=["CORE-131"]),
     issue(126, "Dark mode for public status page", "st-td", 4, None, [L_UX], 41),
     # backlog
     issue(112, "Self-serve data residency picker (EU/US)", "st-bl", 0, None, [L_FEAT], 70),
