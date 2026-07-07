@@ -35,7 +35,8 @@ launch. ltui doesn't:
 - 🎨 **actually pretty** — rounded borders, three hand-tuned dark themes,
   Linear's own state colors, nerd font icons, priority bars like the real app.
 - ⌨️ **keyboard first, mouse welcome** — vim keys everywhere, but everything is
-  also clickable: tickets, teams, even the hint bar.
+  also clickable: tickets, teams, even the hint bar. The panel dividers
+  **drag to resize** (double-click to reset), and your layout sticks.
 
 ## features
 

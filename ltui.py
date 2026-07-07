@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import json
 import sys
@@ -467,6 +467,61 @@ class FilterInput(Input):
         self.app.query_one("#issues").focus()
 
 
+class Splitter(Static):
+    """A 1-cell drag handle between panels; drag to resize, double-click to reset."""
+
+    can_focus = False
+
+    def __init__(
+        self,
+        target: str,
+        invert: bool = False,
+        min_width: int = 16,
+        max_width: int = 100,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._target = target
+        self._invert = invert
+        self._min = min_width
+        self._max = max_width
+        self._drag_x: int | None = None
+        self._start_w: int = 0
+
+    def on_mouse_down(self, event) -> None:
+        self._drag_x = event.screen_x
+        self._start_w = self.app.query_one(self._target).outer_size.width
+        self.capture_mouse()
+        self.add_class("dragging")
+
+    def on_mouse_move(self, event) -> None:
+        if self._drag_x is None:
+            return
+        delta = event.screen_x - self._drag_x
+        if self._invert:
+            delta = -delta
+        cap = min(self._max, self.app.size.width - 50)
+        width = max(self._min, min(self._start_w + delta, cap))
+        self.app.query_one(self._target).styles.width = width
+
+    def on_mouse_up(self, event) -> None:
+        if self._drag_x is None:
+            return
+        self._drag_x = None
+        self.release_mouse()
+        self.remove_class("dragging")
+        save_layout = getattr(self.app, "_save_layout", None)
+        if save_layout is not None:
+            save_layout()
+
+    def on_click(self, event) -> None:
+        if getattr(event, "chain", 1) == 2:  # double-click: back to default width
+            self.app.query_one(self._target).styles.width = None
+            save_layout = getattr(self.app, "_save_layout", None)
+            if save_layout is not None:
+                save_layout(reset=self._target)
+
+
 class PickerModal(ModalScreen):
     BINDINGS = [Binding("escape", "cancel", show=False)]
 
@@ -909,7 +964,13 @@ class LTUI(App):
     #appheader {{ height: 1; padding: 0 2; }}
     #main {{ height: 1fr; }}
 
+    #main {{ padding: 0 1 0 0; }}
     #sidebar {{ width: 24; margin: 0 0 0 1; }}
+    #split-left, #split-right {{ width: 1; }}
+    #split-left:hover, #split-right:hover,
+    #split-left.dragging, #split-right.dragging {{ background: $ltui-border; }}
+    #split-right {{ display: none; }}
+    #split-right.open {{ display: block; }}
     #teams {{
         height: 1fr;
         border: round $ltui-border; border-title-color: {C_SUB};
@@ -921,14 +982,14 @@ class LTUI(App):
     }}
 
     #centre {{
-        width: 1fr; margin: 0 1;
+        width: 1fr;
         border: round $ltui-border;
         border-title-color: {C_TEXT}; border-subtitle-color: {C_DIM};
     }}
     #centre:focus-within {{ border: round $ltui-border-focus; }}
 
     #detail {{
-        display: none; width: 46%; min-width: 44; margin: 0 1 0 0;
+        display: none; width: 46%; min-width: 44;
         border: round $ltui-border;
         border-title-color: $ltui-border-detail; border-subtitle-color: {C_DIM};
     }}
@@ -1123,9 +1184,11 @@ class LTUI(App):
             with Vertical(id="sidebar"):
                 yield NavList(id="teams")
                 yield Static(id="profile")
+            yield Splitter("#sidebar", min_width=16, max_width=44, id="split-left")
             with Vertical(id="centre"):
                 yield FilterInput(placeholder=" filter issues…", id="filter")
                 yield NavList(id="issues")
+            yield Splitter("#detail", invert=True, min_width=34, id="split-right")
             with Vertical(id="detail"):
                 yield Static(id="d-title")
                 yield Static(id="d-meta")
@@ -1145,6 +1208,11 @@ class LTUI(App):
         saved = load_state().get("theme")
         self.theme = saved if saved in self.available_themes else THEME_NAMES[0]
         self.ansi_color = self._theme_is_ansi()
+        layout = load_state()
+        if w := layout.get("sidebar_w"):
+            self.query_one("#sidebar").styles.width = int(w)
+        if w := layout.get("detail_w"):
+            self.query_one("#detail").styles.width = int(w)
         self.query_one("#teams").border_title = " teams "
         self.query_one("#profile").border_title = " you "
         self.query_one("#centre").border_title = " issues "
@@ -1263,6 +1331,19 @@ class LTUI(App):
             return
         self.query_one("#teams", NavList).highlighted = self._teams.index(team)
         self.load_team(team)
+
+    def _save_layout(self, reset: str | None = None) -> None:
+        data = load_state()
+        if reset == "#sidebar":
+            data.pop("sidebar_w", None)
+        else:
+            data["sidebar_w"] = self.query_one("#sidebar").outer_size.width
+        detail = self.query_one("#detail")
+        if reset == "#detail":
+            data.pop("detail_w", None)
+        elif detail.has_class("open"):
+            data["detail_w"] = detail.outer_size.width
+        save_state(data)
 
     def _save_state(self) -> None:
         data = load_state()
@@ -1632,6 +1713,7 @@ class LTUI(App):
         children_w.remove_children()
         panel = self.query_one("#detail")
         panel.add_class("open")
+        self.query_one("#split-right").add_class("open")
         panel.border_title = f"  {issue['identifier']} "
         panel.border_subtitle = f" {rel_time(issue['updatedAt'])} ago "
         self.query_one("#d-title", Static).update(
@@ -1684,6 +1766,7 @@ class LTUI(App):
     def close_detail(self) -> None:
         self._detail_issue = None
         self.query_one("#detail").remove_class("open")
+        self.query_one("#split-right").remove_class("open")
         self.query_one("#issues").focus()
 
     def _current_issue(self) -> dict | None:
@@ -1938,7 +2021,10 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
 keys: enter open ticket   n new   s status   p priority   c comment
       a assign   o browser   y yank   / filter   m mine only   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
-      q quit"""
+      q quit
+
+mouse: everything clicks; drag the panel dividers to resize,
+       double-click a divider to reset"""
 
 
 def main() -> None:
