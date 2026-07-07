@@ -7,3 +7,4 @@ build/
 venv/
 assets/*.svg
 CLAUDE.md
+.env
