@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 import json
 import sys
@@ -443,6 +443,24 @@ def pop_in(widget, duration: float = 0.15) -> None:
     """
     widget.styles.opacity = 0.0
     widget.styles.animate("opacity", 1.0, duration=duration, easing="out_cubic")
+
+
+SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+
+FX_TICK = 0.12  # seconds per animation frame
+FX_REST_TICKS = 26  # pause between wave sweeps (~3s)
+
+
+def wave_markup(s: str, pos: int, base: str, hi: str) -> str:
+    """One traveling letter, bolded + capitalized: gheatmc -> gHeatmc -> ..."""
+    out = []
+    for i, ch in enumerate(s):
+        e = escape(ch)
+        if i == pos:
+            out.append(f"[bold {hi}]{e.upper()}[/]")
+        else:
+            out.append(f"[{base}]{e}[/]")
+    return "".join(out)
 
 
 class NavList(OptionList):
@@ -1152,6 +1170,10 @@ class LTUI(App):
         self._mine = load_state().get("mine", False)
         self._filter = ""
         self._detail_issue: dict | None = None
+        self._wave_pos = -1
+        self._wave_rest = 0
+        self._refreshing = False
+        self._spin_frame = 0
         self._opt_index: dict[str, int] = {}
         self._issue_by_id: dict[str, dict] = {}
 
@@ -1237,6 +1259,7 @@ class LTUI(App):
         self.query_one("#profile").border_title = " you "
         self.query_one("#centre").border_title = " issues "
         self._update_profile()
+        self.set_interval(FX_TICK, self._tick_fx)
         self.query_one("#issues").focus()
         try:
             key = load_api_key()
@@ -1301,13 +1324,7 @@ class LTUI(App):
         self._viewer_name = data["viewer"]["displayName"]
         self._org = data["organization"]["name"]
         self._update_profile()
-        header = Text(" ")
-        header.append(" ltui", style=f"bold {C_BLUE}")
-        header.append("  ·  ", style=C_VFAINT)
-        header.append(data["organization"]["name"], style=C_SUB)
-        header.append(" / ", style=C_VFAINT)
-        header.append(data["viewer"]["displayName"], style=C_DIM)
-        self.query_one("#appheader", Static).update(header)
+        self._update_header()
 
         teams_list = self.query_one("#teams", NavList)
         teams_list.clear_options()
@@ -1397,6 +1414,7 @@ class LTUI(App):
             self._set_issues(cached["issues"], cached["states"])
             self.render_issues()
             centre.border_subtitle = f" {len(self._issues)} · ↻ refreshing "
+            self._refreshing = True
         else:
             issues_list.loading = True
         self._save_state()
@@ -1404,14 +1422,17 @@ class LTUI(App):
             data = await self.gql(QL_ISSUES, {"teamId": team["id"]})
         except Exception as e:
             issues_list.loading = False
+            self._refreshing = False
             self.notify(f"linear: {e}", severity="error", timeout=10)
             return
         if self._team is None or self._team["id"] != team["id"]:
+            self._refreshing = False
             return  # user switched teams while refreshing
         self._set_issues(
             data["team"]["issues"]["nodes"], data["team"]["states"]["nodes"]
         )
         issues_list.loading = False
+        self._refreshing = False
         write_cache(
             f"team-{team['id']}",
             {"issues": self._issues, "states": self._states},
@@ -1833,13 +1854,52 @@ class LTUI(App):
         if self._team:
             self.load_team(self._team)
 
+    def _tick_fx(self) -> None:
+        # name wave: sweep, rest, repeat — renders only while sweeping
+        if self._viewer_name:
+            if self._wave_rest > 0:
+                self._wave_rest -= 1
+            else:
+                self._wave_pos += 1
+                if self._wave_pos >= len(self._viewer_name):
+                    self._wave_pos = -1
+                    self._wave_rest = FX_REST_TICKS
+                self._update_profile()
+                self._update_header()
+        # braille spinner while a background refresh is in flight
+        if self._refreshing:
+            self._spin_frame = (self._spin_frame + 1) % len(SPINNER_FRAMES)
+            frame = SPINNER_FRAMES[self._spin_frame]
+            try:
+                self.query_one("#centre").border_subtitle = (
+                    f" {len(self._issues)} \u00b7 {frame} refreshing "
+                )
+            except Exception:
+                pass
+
+    def _update_header(self) -> None:
+        if self._org is None or self._viewer_name is None:
+            return
+        markup = (
+            f"[bold {C_BLUE}] \uf03a [/]"
+            + wave_markup("ltui", self._wave_pos, f"bold {C_BLUE}", C_LAV)
+            + f"[{C_VFAINT}]  \u00b7  [/][{C_SUB}]{escape(self._org)}[/]"
+            + f"[{C_VFAINT}] / [/][{C_DIM}]{escape(self._viewer_name)}[/]"
+        )
+        self.query_one("#appheader", Static).update(markup)
+
     def _update_profile(self) -> None:
-        name = escape(self._viewer_name or "…")
+        if self._viewer_name:
+            name = wave_markup(
+                self._viewer_name, self._wave_pos, f"bold {C_TEXT}", C_BLUE
+            )
+        else:
+            name = f"[bold {C_TEXT}]\u2026[/]"
         org = escape(self._org or "connecting")
         mine = "on" if self._mine else "off"
         mine_color = C_GREEN if self._mine else C_DIM
         self.query_one("#profile", Static).update(
-            f"[bold {C_TEXT}] {name}[/]\n"
+            " " + name + "\n"
             f"[{C_DIM}] {org}[/]\n"
             f"[@click=app.change_theme][{C_SUB}] [/][{C_SUB}]{self.theme}[/][/]\n"
             f"[@click=app.toggle_mine][{C_SUB}] mine [/][{mine_color}]{mine}[/][/]\n"
