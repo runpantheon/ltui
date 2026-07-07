@@ -306,7 +306,8 @@ made by [**@Gheat1**](https://github.com/Gheat1) — issues, ideas, and PRs
 welcome over at [Gheat1/ltui](https://github.com/Gheat1/ltui).
 
 building your own TUI? the themes, widgets, and design system behind ltui
-live in [**ricekit**](https://github.com/Gheat1/ricekit).
+live in [**ricekit**](https://github.com/Gheat1/ricekit) — and if your team
+is on Jira instead, ltui has a sibling: [**jtui**](https://github.com/Gheat1/jtui).
 
 standing on the shoulders of [textual](https://github.com/Textualize/textual)
 and the [Linear API](https://developers.linear.app).
