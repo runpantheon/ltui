@@ -54,31 +54,30 @@ launch. ltui doesn't:
 
 ## install
 
-**arch, btw** — from the [AUR](https://aur.archlinux.org/packages/ltui):
+works on any linux · macOS · windows, straight from this repo.
+grab [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io) and:
 
 ```sh
-yay -S ltui
-```
-
-**any linux · macOS · windows** — with [pipx](https://pipx.pypa.io) or [uv](https://docs.astral.sh/uv/):
-
-```sh
-pipx install ltui-linear      # or: uv tool install ltui-linear
-```
-
-<sub>the PyPI name <code>ltui</code> was taken — the command is still <code>ltui</code></sub>
-
-**bleeding edge** — straight from main:
-
-```sh
+uv tool install git+https://github.com/Gheat1/ltui
+# or
 pipx install git+https://github.com/Gheat1/ltui
 ```
 
-then just:
+or build it yourself from source:
+
+```sh
+git clone https://github.com/Gheat1/ltui && cd ltui
+pip install .
+```
+
+either way you now have the command:
 
 ```sh
 ltui
 ```
+
+upgrading later: `uv tool upgrade ltui-linear` / `pipx reinstall ltui-linear`
+(the *package* is named `ltui-linear`; the command is `ltui`).
 
 <details>
 <summary><b>platform notes</b></summary>

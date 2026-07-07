@@ -5,11 +5,9 @@ on:
     tags: ["v*"]
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write # PyPI trusted publishing
       contents: write # attach dists to the GitHub release
     steps:
       - uses: actions/checkout@v4
@@ -25,5 +23,7 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
-      - name: publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # PyPI publishing is intentionally not wired up yet — when the
+  # pypi.org trusted publisher is configured, add a publish job with
+  # pypa/gh-action-pypi-publish and `id-token: write` permissions.
