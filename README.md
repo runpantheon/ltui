@@ -32,8 +32,9 @@ launch. ltui doesn't:
 - 📦 **instant startup** — your last-seen issues render from a local cache in
   ~50ms while fresh data loads in the background. You're scrolling before the
   API has even said hello.
-- 🎨 **actually pretty** — rounded borders, three hand-tuned dark themes,
-  Linear's own state colors, nerd font icons, priority bars like the real app.
+- 🎨 **actually pretty** — rounded borders, five themes,
+  Linear's own state colors, nerd font icons, priority bars like the real app,
+  and subtle fade animations on panels and modals.
 - ⌨️ **keyboard first, mouse welcome** — vim keys everywhere, but everything is
   also clickable: tickets, teams, even the hint bar. The panel dividers
   **drag to resize** (double-click to reset), and your layout sticks.

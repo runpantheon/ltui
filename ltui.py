@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import json
 import sys
@@ -435,6 +435,16 @@ def clear_cache() -> int:
 
 
 # ── widgets ───────────────────────────────────────────────────────────────
+def pop_in(widget, duration: float = 0.15) -> None:
+    """Fade a freshly mounted container into place.
+
+    (offset/slide animation isn't supported for ScalarOffset in textual 8.x,
+    so this is opacity-only — still reads as motion at 150ms.)
+    """
+    widget.styles.opacity = 0.0
+    widget.styles.animate("opacity", 1.0, duration=duration, easing="out_cubic")
+
+
 class NavList(OptionList):
     BINDINGS = [
         Binding("j", "cursor_down", show=False),
@@ -536,6 +546,7 @@ class PickerModal(ModalScreen):
             yield NavList(*self._options, id="picker-list")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#picker-box"))
         self.query_one("#picker-list").focus()
 
     @on(OptionList.OptionSelected)
@@ -568,6 +579,7 @@ class CommentModal(ModalScreen):
                 yield Button(" comment", variant="primary", id="comment-send")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#comment-box"))
         self.query_one("#comment-input").focus()
 
     @on(Button.Pressed, "#comment-send")
@@ -610,6 +622,7 @@ class NewTicketModal(ModalScreen):
                 yield Button(" create", variant="primary", id="ticket-create")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#ticket-box"))
         self.query_one("#ticket-title").focus()
 
     @on(Input.Submitted, "#ticket-title")
@@ -668,6 +681,7 @@ class OnboardModal(ModalScreen):
                 yield Button("\uf1e6 connect", variant="primary", id="onboard-connect")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#onboard-box"))
         self.query_one("#onboard-key").focus()
 
     def action_open_keys(self) -> None:
@@ -718,6 +732,7 @@ class ThemeModal(ModalScreen):
         return Option(row, id=name)
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#theme-box"))
         app = self.app
         self._original = app.theme
         ol = self.query_one("#theme-list", NavList)
@@ -764,6 +779,7 @@ class SettingsModal(ModalScreen):
             yield Static(id="settings-foot")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#settings-box"))
         app = self.app
         profile = Text()
         profile.append(" ", style=C_BLUE)
@@ -860,6 +876,7 @@ class HelpModal(ModalScreen):
             yield Static(id="help-foot")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#help-box"))
         title = Text()
         title.append("\uf11c ", style=C_BLUE)
         title.append("keys", style=f"bold {C_TEXT}")
@@ -913,6 +930,7 @@ class WelcomeModal(ModalScreen):
                 yield Button("got it", variant="primary", id="welcome-ok")
 
     def on_mount(self) -> None:
+        pop_in(self.query_one("#welcome-box"))
         self.query_one("#welcome-ok").focus()
 
     @on(Button.Pressed, "#welcome-ok")
@@ -1023,6 +1041,7 @@ class LTUI(App):
     #d-desc {{ background: transparent; padding: 0 1; }}
     Markdown {{ background: transparent; }}
     #d-comments-head {{ padding: 1 1 0 1; }}
+    #d-comments {{ height: auto; }}
     .comment {{
         height: auto; border-left: thick {C_VFAINT};
         padding: 0 1; margin: 1 1 0 1;
@@ -1712,8 +1731,11 @@ class LTUI(App):
         children_w.remove_class("visible")
         children_w.remove_children()
         panel = self.query_one("#detail")
+        was_closed = not panel.has_class("open")
         panel.add_class("open")
         self.query_one("#split-right").add_class("open")
+        if was_closed:
+            pop_in(panel, duration=0.18)
         panel.border_title = f"  {issue['identifier']} "
         panel.border_subtitle = f" {rel_time(issue['updatedAt'])} ago "
         self.query_one("#d-title", Static).update(
