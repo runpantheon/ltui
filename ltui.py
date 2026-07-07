@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 import json
 import sys
@@ -879,6 +879,7 @@ class HelpModal(ModalScreen):
             ("/", "filter issues"),
             ("m", "toggle mine only"),
             ("v", "group by status / project"),
+            ("V", "filter to a single project"),
             ("t", "cycle theme"),
             (",", "settings"),
             ("r", "refresh"),
@@ -988,6 +989,7 @@ class LTUI(App):
         Binding("slash", "filter", "filter"),
         Binding("m", "toggle_mine", "mine"),
         Binding("v", "toggle_group", "group"),
+        Binding("V", "pick_project", show=False),
         Binding("t", "cycle_theme", "theme"),
         Binding("comma", "open_settings", show=False),
         Binding("question_mark", "help", "help"),
@@ -1173,6 +1175,7 @@ class LTUI(App):
         self._mine = load_state().get("mine", False)
         self._group_by = load_state().get("group_by", "status")
         self._filter = ""
+        self._project_filter: str | None = None  # project id, "" = no-project
         self._detail_issue: dict | None = None
         self._wave_pos = -1
         self._wave_rest = 0
@@ -1642,6 +1645,12 @@ class LTUI(App):
                 for i in issues
                 if (i.get("assignee") or {}).get("id") == self._viewer_id
             ]
+        if self._project_filter is not None:
+            issues = [
+                i
+                for i in issues
+                if (i.get("project") or {}).get("id", "") == self._project_filter
+            ]
         if flt:
             issues = [
                 i
@@ -1713,8 +1722,18 @@ class LTUI(App):
             opts.append(Option(Text(f"  {msg}", style=C_DIM), disabled=True))
         ol.add_options(opts)
 
-        mine_tag = "  mine · " if self._mine else " "
-        self.query_one("#centre").border_subtitle = f"{mine_tag}{len(issues)} issues "
+        mine_tag = " \uf007 mine \u00b7" if self._mine else ""
+        proj_tag = ""
+        if self._project_filter is not None:
+            pname = next(
+                ((i.get("project") or {}).get("name") for i in self._issues
+                 if (i.get("project") or {}).get("id", "") == self._project_filter),
+                "no project",
+            ) or "no project"
+            proj_tag = f" \uf07b {pname} \u00b7"
+        self.query_one("#centre").border_subtitle = (
+            f"{mine_tag}{proj_tag} {len(issues)} issues "
+        )
         if keep and keep in self._opt_index:
             ol.highlighted = self._opt_index[keep]
         elif self._opt_index:
@@ -1984,6 +2003,40 @@ class LTUI(App):
 
         self.push_screen(NewTicketModal(f" new ticket · {team['key']}"), done)
 
+    def action_pick_project(self) -> None:
+        projects: dict[str, dict] = {}
+        counts: dict[str, int] = {}
+        for i in self._issues:
+            p = i.get("project") or {"id": "", "name": "no project", "color": None}
+            projects[p["id"]] = p
+            counts[p["id"]] = counts.get(p["id"], 0) + 1
+        opts = []
+        row = Text()
+        row.append("\uf03a ", style=C_BLUE)
+        row.append("all projects", style=C_TEXT)
+        if self._project_filter is None:
+            row.append("  \uf00c", style=C_GREEN)
+        opts.append(Option(row, id="all:"))
+        for pid, p in sorted(projects.items(), key=lambda x: (x[0] == "", -counts[x[0]])):
+            row = Text()
+            row.append("\uf07b ", style=p.get("color") or C_DIM)
+            row.append(p["name"], style=C_TEXT)
+            row.append(f"  {counts[pid]}", style=C_DIM)
+            if self._project_filter == pid:
+                row.append("  \uf00c", style=C_GREEN)
+            opts.append(Option(row, id=f"proj:{pid}"))
+
+        def done(choice: str | None) -> None:
+            if choice is None:
+                return
+            if choice == "all:":
+                self._project_filter = None
+            else:
+                self._project_filter = choice.removeprefix("proj:")
+            self.render_issues()
+
+        self.push_screen(PickerModal("filter by project", opts), done)
+
     def action_toggle_group(self) -> None:
         self._group_by = "project" if self._group_by == "status" else "status"
         self._save_state()
@@ -2156,7 +2209,7 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
 
 keys: enter open ticket   n new   s status   p priority   c comment
       a assign   o browser   y yank   / filter   m mine only   v group
-      t theme
+      V one project   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 

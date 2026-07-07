@@ -148,6 +148,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
 | `v`      | group by **status / project**                 |
+| `V`      | filter to a **single project**                |
 | `t`      | cycle **theme**                               |
 | `,`      | open **settings**                             |
 | `r`      | refresh                                       |
@@ -159,7 +160,8 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 
 `v` flips the board from status columns to **projects** — each project gets a
 color-coded section (freshest work first, status order inside), with tickets
-that belong to no project collected at the bottom. Press `v` again to go back.
+that belong to no project collected at the bottom. Press `v` again to go back —
+or `V` to zoom into a **single project** (works in either grouping).
 
 <div align="center">
 <img src="assets/projects.png" alt="group by project" width="80%">
