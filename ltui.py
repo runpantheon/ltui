@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 import json
 import sys
@@ -24,12 +24,14 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Footer, Input, Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
+from textual.worker import WorkerState
 
 API_URL = "https://api.linear.app/graphql"
 CONFIG = Path.home() / ".config/linear-cli/config.toml"
 LTUI_CONFIG = Path.home() / ".config/ltui/config.toml"
 STATE_FILE = Path.home() / ".local/state/ltui/state.json"
 CACHE_DIR = Path.home() / ".cache/ltui"
+AUTO_REFRESH_SECONDS = 180
 
 # ── palette (catppuccin mocha) ────────────────────────────────────────────
 C_TEXT = "#cdd6f4"
@@ -189,13 +191,14 @@ PRIORITIES = [(1, "Urgent"), (2, "High"), (3, "Medium"), (4, "Low"), (0, "No pri
 
 # ── graphql ───────────────────────────────────────────────────────────────
 ISSUE_FIELDS = """
-        id identifier title description url priority
+        id identifier title description url priority branchName
         updatedAt createdAt
         state { id name color type position }
         assignee { id displayName }
         labels(first: 6) { nodes { name color } }
         relations(first: 6) { nodes { type relatedIssue { identifier } } }
         inverseRelations(first: 6) { nodes { type issue { identifier } } }
+        parent { identifier }
 """
 
 QL_BOOT = """
@@ -226,9 +229,20 @@ mutation($teamId: String!, $title: String!, $desc: String) {{
 QL_COMMENTS = """
 query($id: String!) {
   issue(id: $id) {
+    parent { identifier title }
+    children(first: 25) {
+      nodes { identifier title state { name color type } }
+    }
     comments(first: 50) {
       nodes { id body createdAt user { displayName } botActor { name } }
     }
+  }
+}"""
+
+QL_MEMBERS = """
+query($teamId: String!) {
+  team(id: $teamId) {
+    members(first: 50) { nodes { id displayName } }
   }
 }"""
 
@@ -237,6 +251,14 @@ mutation($id: String!, $stateId: String!) {
   issueUpdate(id: $id, input: {stateId: $stateId}) {
     success
     issue { id state { id name color type position } }
+  }
+}"""
+
+M_ASSIGN = """
+mutation($id: String!, $assigneeId: String) {
+  issueUpdate(id: $id, input: {assigneeId: $assigneeId}) {
+    success
+    issue { id assignee { id displayName } }
   }
 }"""
 
@@ -367,8 +389,8 @@ def state_sort_key(s: dict):
 
 
 def issue_sort_key(i: dict):
-    p = i["priority"] or 99  # no-priority sinks
-    return (p, -parse_dt(i["updatedAt"]).timestamp())
+    # most recently updated first within each status group
+    return (-parse_dt(i["updatedAt"]).timestamp(),)
 
 
 def load_state() -> dict:
@@ -736,12 +758,128 @@ class SettingsModal(ModalScreen):
         self.dismiss(None)
 
 
+class HelpModal(ModalScreen):
+    """Keybinding cheatsheet — press ? anywhere."""
+
+    BINDINGS = [
+        Binding("escape", "close_modal", show=False),
+        Binding("question_mark", "close_modal", show=False),
+        # screen-level binding wins over the app's q → quit while open
+        Binding("q", "close_modal", show=False),
+    ]
+
+    SECTIONS = [
+        ("navigate", [
+            ("j/k ↑↓", "move around lists and the detail panel"),
+            ("g / G", "jump to top / bottom"),
+            ("enter", "open ticket detail (click works too)"),
+            ("esc", "close panel · dismiss modal · clear filter"),
+        ]),
+        ("ticket", [
+            ("n", "new ticket in the current team"),
+            ("s", "change status"),
+            ("p", "change priority"),
+            ("a", "change assignee (or unassign)"),
+            ("c", "add a comment (ctrl+s to send)"),
+            ("y", "yank — copy branch / url / identifier"),
+            ("o", "open in browser"),
+        ]),
+        ("view", [
+            ("/", "filter issues"),
+            ("m", "toggle mine only"),
+            ("t", "cycle theme"),
+            (",", "settings"),
+            ("r", "refresh"),
+        ]),
+        ("app", [
+            ("?", "this help"),
+            ("ctrl+p", "command palette"),
+            ("q", "quit"),
+        ]),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-box"):
+            yield Static(id="help-title")
+            yield Static(id="help-body")
+            yield Static(id="help-foot")
+
+    def on_mount(self) -> None:
+        title = Text()
+        title.append("\uf11c ", style=C_BLUE)
+        title.append("keys", style=f"bold {C_TEXT}")
+        self.query_one("#help-title", Static).update(title)
+        key_w = max(len(k) for _, rows in self.SECTIONS for k, _ in rows) + 3
+        body = Text()
+        for section, rows in self.SECTIONS:
+            if body:
+                body.append("\n")
+            body.append(f" {section}\n", style=f"bold {C_DIM}")
+            for key, desc in rows:
+                body.append(f"   {key.ljust(key_w)}", style=C_BLUE)
+                body.append(f"{desc}\n", style=C_SUB)
+        body.rstrip()
+        self.query_one("#help-body", Static).update(body)
+        self.query_one("#help-foot", Static).update(
+            Text("? · esc · q to close", style=C_VFAINT)
+        )
+
+    def action_close_modal(self) -> None:
+        self.dismiss(None)
+
+
+class WelcomeModal(ModalScreen):
+    """One-time first-launch tour — dismissing marks the user as welcomed."""
+
+    BINDINGS = [
+        Binding("escape", "close_modal", show=False),
+        Binding("enter", "close_modal", show=False),
+        Binding("question_mark", "close_to_help", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="welcome-box"):
+            yield Static(
+                f"[bold {C_BLUE}]\uf005  welcome to ltui[/]", id="welcome-title"
+            )
+            yield Static(
+                f"[{C_SUB}]you're in — your issues are loading right now.[/]\n\n"
+                f"[{C_BLUE}]enter[/] [{C_SUB}]opens a ticket ·[/] "
+                f"[{C_BLUE}]n[/] [{C_SUB}]creates one[/]\n"
+                f"[{C_BLUE}]s[/] [{C_DIM}]/[/] [{C_BLUE}]a[/] [{C_DIM}]/[/] [{C_BLUE}]c[/] "
+                f"[{C_SUB}]— status, assignee, comment[/]\n"
+                f"[{C_BLUE}]m[/] [{C_SUB}]shows only yours ·[/] "
+                f"[{C_BLUE}]/[/] [{C_SUB}]filters the list[/]\n\n"
+                f"[{C_SUB}]and[/] [{C_BLUE}]?[/] [{C_SUB}]anytime for everything else.[/]",
+                id="welcome-body",
+            )
+            with Horizontal(id="welcome-actions"):
+                yield Static(f"[{C_DIM}]esc to close[/]", id="welcome-hint")
+                yield Button("got it", variant="primary", id="welcome-ok")
+
+    def on_mount(self) -> None:
+        self.query_one("#welcome-ok").focus()
+
+    @on(Button.Pressed, "#welcome-ok")
+    def _ok(self) -> None:
+        self.dismiss(None)
+
+    def action_close_modal(self) -> None:
+        self.dismiss(None)
+
+    def action_close_to_help(self) -> None:
+        app = self.app
+        self.dismiss(None)
+        app.call_later(app.action_help)
+
+
 def hint_markup() -> str:
     return (
         f"[@click=app.change_status][{C_BLUE}]s[/] [{C_DIM}]status[/][/]  "
         f"[@click=app.change_priority][{C_BLUE}]p[/] [{C_DIM}]priority[/][/]  "
         f"[@click=app.add_comment][{C_BLUE}]c[/] [{C_DIM}]comment[/][/]  "
         f"[@click=app.open_browser][{C_BLUE}]o[/] [{C_DIM}]browser[/][/]  "
+        f"[@click=app.yank][{C_BLUE}]y[/] [{C_DIM}]yank[/][/]  "
         f"[@click=app.back][{C_BLUE}]esc[/] [{C_DIM}]close[/][/]"
     )
 
@@ -757,10 +895,13 @@ class LTUI(App):
         Binding("m", "toggle_mine", "mine"),
         Binding("t", "cycle_theme", "theme"),
         Binding("comma", "open_settings", show=False),
+        Binding("question_mark", "help", "help"),
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", show=False),
         Binding("p", "change_priority", show=False),
+        Binding("a", "change_assignee", show=False),
         Binding("o", "open_browser", show=False),
+        Binding("y", "yank", show=False),
         Binding("escape", "back", show=False),
     ]
 
@@ -814,6 +955,10 @@ class LTUI(App):
     #d-title {{ padding: 1 1 0 1; }}
     #d-meta {{ padding: 1 1 0 1; }}
     #d-scroll {{ height: 1fr; margin: 1 0 0 0; scrollbar-size-vertical: 1; }}
+    #d-parent {{ display: none; height: auto; padding: 0 1; margin: 0 0 1 0; }}
+    #d-parent.visible {{ display: block; }}
+    #d-children {{ display: none; height: auto; padding: 0 1; margin: 0 0 1 0; }}
+    #d-children.visible {{ display: block; }}
     #d-desc {{ background: transparent; padding: 0 1; }}
     Markdown {{ background: transparent; }}
     #d-comments-head {{ padding: 1 1 0 1; }}
@@ -889,6 +1034,26 @@ class LTUI(App):
     #settings-profile {{ padding: 0 1 1 1; }}
     #settings-list {{ height: auto; max-height: 16; }}
     #settings-foot {{ padding: 1 1 0 1; }}
+
+    HelpModal {{ align: center middle; background: $ltui-overlay; }}
+    #help-box {{
+        width: 64; height: auto; max-height: 90%;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
+    }}
+    #help-title {{ padding: 0 1 1 1; }}
+    #help-body {{ height: auto; }}
+    #help-foot {{ padding: 1 1 0 1; }}
+
+    WelcomeModal {{ align: center middle; background: $ltui-overlay; }}
+    #welcome-box {{
+        width: 56; height: auto;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
+    }}
+    #welcome-title {{ padding: 0 0 1 0; }}
+    #welcome-body {{ padding: 0 0 1 0; }}
+    #welcome-actions {{ height: 3; }}
+    #welcome-hint {{ width: 1fr; padding: 1 0; }}
+    #welcome-actions Button {{ margin: 0 0 0 2; min-width: 10; }}
     """
 
     def __init__(self) -> None:
@@ -897,6 +1062,7 @@ class LTUI(App):
         self._teams: list[dict] = []
         self._issues: list[dict] = []
         self._states: list[dict] = []
+        self._members: dict[str, list] = {}
         self._team: dict | None = None
         self._viewer_id: str | None = None
         self._viewer_name: str | None = None
@@ -964,6 +1130,8 @@ class LTUI(App):
                 yield Static(id="d-title")
                 yield Static(id="d-meta")
                 with DetailScroll(id="d-scroll"):
+                    yield Static(id="d-parent")
+                    yield Vertical(id="d-children")
                     yield Markdown(id="d-desc")
                     yield Static(id="d-comments-head")
                     yield Vertical(id="d-comments")
@@ -1013,6 +1181,19 @@ class LTUI(App):
             self.query_one("#teams", NavList).highlighted = self._teams.index(team)
             self.load_team(team)
         self.boot(pick_team=team is None)
+        self.set_interval(AUTO_REFRESH_SECONDS, self._auto_refresh_board)
+        # one-time tour; _start may run inside OnboardModal's dismiss callback
+        # (screen still popping), so defer the push a tick
+        if not load_state().get("welcomed"):
+            self.call_later(self._show_welcome)
+
+    def _show_welcome(self) -> None:
+        def done(_: object | None) -> None:
+            data = load_state()
+            data["welcomed"] = True
+            save_state(data)
+
+        self.push_screen(WelcomeModal(), done)
 
     # ── api ───────────────────────────────────────────────────────────
     async def gql(self, query: str, variables: dict | None = None) -> dict:
@@ -1147,10 +1328,34 @@ class LTUI(App):
                 self._detail_issue = fresh
                 self._update_detail_meta(fresh)
 
+    # NOT named _auto_refresh: textual's DOMNode owns that instance attribute
+    # (backing field of the auto_refresh property) and would shadow the method
+    def _auto_refresh_board(self) -> None:
+        # silent background re-sync — load_team's cache-render + exclusive
+        # "issues" worker group makes this a quiet swap that preserves the
+        # highlight and the open detail panel. Skip whenever it could
+        # interrupt the user (modal open) or race a pending mutation.
+        if self.client is None or self._team is None:
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        if any(
+            w.group == "mutate" and w.state == WorkerState.RUNNING
+            for w in self.workers
+        ):
+            return
+        self.load_team(self._team)
+
     @work(exclusive=True, group="detail")
     async def load_comments(self, issue: dict) -> None:
         box = self.query_one("#d-comments", Vertical)
         head = self.query_one("#d-comments-head", Static)
+        parent_w = self.query_one("#d-parent", Static)
+        cbox = self.query_one("#d-children", Vertical)
+        parent_w.update("")
+        parent_w.remove_class("visible")
+        cbox.remove_class("visible")
+        await cbox.remove_children()
         await box.remove_children()
         head.update(Text(" comments · loading…", style=C_DIM))
         try:
@@ -1160,6 +1365,39 @@ class LTUI(App):
             return
         if self._detail_issue is None or self._detail_issue["id"] != issue["id"]:
             return
+        # parent + sub-issues context (old caches / demo stubs lack the keys)
+        parent = data["issue"].get("parent")
+        if parent:
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append("\uf148 parent ", style=C_DIM)
+            line.append(parent["identifier"], style=C_SUB)
+            p_title = (parent.get("title") or "").strip()
+            if len(p_title) > 60:
+                p_title = p_title[:59] + "…"
+            if p_title:
+                line.append(f" — {p_title}", style=C_DIM)
+            parent_w.update(line)
+            parent_w.add_class("visible")
+        children = (data["issue"].get("children") or {}).get("nodes") or []
+        if children:
+            done = sum(
+                1 for ch in children
+                if ch["state"]["type"] in ("completed", "canceled")
+            )
+            chead = Text("\uf0e8 ", style=C_MAUVE)
+            chead.append(f"sub-issues · {done}/{len(children)}", style=f"bold {C_SUB}")
+            await cbox.mount(Static(chead))
+            for ch in children:
+                st = ch["state"]
+                row = Text(no_wrap=True, overflow="ellipsis")
+                row.append(f"{state_icon(st)} ", style=st["color"] or C_SUB)
+                row.append(ch["identifier"], style=C_DIM)
+                c_title = ch["title"]
+                if len(c_title) > 60:
+                    c_title = c_title[:59] + "…"
+                row.append(f" {c_title}", style=C_TEXT)
+                await cbox.mount(Static(row))
+            cbox.add_class("visible")
         comments = sorted(
             data["issue"]["comments"]["nodes"], key=lambda c: c["createdAt"]
         )
@@ -1210,6 +1448,24 @@ class LTUI(App):
         if self._detail_issue and self._detail_issue["id"] == issue["id"]:
             self._update_detail_meta(issue)
         self.notify(f" {issue['identifier']} → {priority_name(p)}")
+
+    @work(group="mutate")
+    async def apply_assignee(self, issue: dict, assignee_id: str | None) -> None:
+        try:
+            data = await self.gql(
+                M_ASSIGN, {"id": issue["id"], "assigneeId": assignee_id}
+            )
+            new_assignee = data["issueUpdate"]["issue"]["assignee"]
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        issue["assignee"] = new_assignee
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self._update_detail_meta(issue)
+        name = (new_assignee or {}).get("displayName") or "unassigned"
+        self.notify(f"\uf007 {issue['identifier']} → {name}")
 
     @work(group="mutate")
     async def create_issue(self, team: dict, title: str, desc: str | None) -> None:
@@ -1368,6 +1624,12 @@ class LTUI(App):
     # ── detail panel ──────────────────────────────────────────────────
     def show_detail(self, issue: dict) -> None:
         self._detail_issue = issue
+        parent_w = self.query_one("#d-parent", Static)
+        parent_w.update("")
+        parent_w.remove_class("visible")
+        children_w = self.query_one("#d-children", Vertical)
+        children_w.remove_class("visible")
+        children_w.remove_children()
         panel = self.query_one("#detail")
         panel.add_class("open")
         panel.border_title = f"  {issue['identifier']} "
@@ -1483,6 +1745,11 @@ class LTUI(App):
             return
         self.push_screen(SettingsModal())
 
+    def action_help(self) -> None:
+        if isinstance(self.screen, HelpModal):
+            return
+        self.push_screen(HelpModal())
+
     def action_change_theme(self) -> None:
         if isinstance(self.screen, ThemeModal):
             return
@@ -1560,6 +1827,60 @@ class LTUI(App):
 
         self.push_screen(PickerModal(f"priority · {issue['identifier']}", opts), done)
 
+    def action_change_assignee(self) -> None:
+        issue = self._current_issue()
+        if not issue or self._team is None:
+            return
+        self.pick_assignee(issue)
+
+    @work(exclusive=True, group="members")
+    async def pick_assignee(self, issue: dict) -> None:
+        team = self._team
+        members = self._members.get(team["id"])
+        if members is None:
+            try:
+                data = await self.gql(QL_MEMBERS, {"teamId": team["id"]})
+                members = data["team"]["members"]["nodes"]
+            except Exception as e:
+                self.notify(f"linear: {e}", severity="error")
+                return
+            self._members[team["id"]] = members
+        if self._team is None or self._team["id"] != team["id"]:
+            return  # user switched teams while fetching
+        current = (issue.get("assignee") or {}).get("id")
+        opts = []
+        if self._viewer_id:
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append("\uf007 ", style=C_BLUE)
+            row.append(f"me ({self._viewer_name})", style=C_TEXT)
+            if self._viewer_id == current:
+                row.append("  \uf00c", style=C_GREEN)
+            opts.append(Option(row, id=self._viewer_id))
+        for m in members:
+            if m["id"] == self._viewer_id:
+                continue
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append("\uf007 ", style=C_MAUVE)
+            row.append(m["displayName"], style=C_TEXT)
+            if m["id"] == current:
+                row.append("  \uf00c", style=C_GREEN)
+            opts.append(Option(row, id=m["id"]))
+        row = Text()
+        row.append("\uf05e ", style=C_DIM)
+        row.append("unassign", style=C_SUB)
+        if current is None:
+            row.append("  \uf00c", style=C_GREEN)
+        opts.append(Option(row, id="none:"))
+
+        def done(assignee_id: str | None) -> None:
+            if assignee_id is None:
+                return
+            new_id = None if assignee_id == "none:" else assignee_id
+            if new_id != current:
+                self.apply_assignee(issue, new_id)
+
+        self.push_screen(PickerModal(f"assign {issue['identifier']}", opts), done)
+
     def action_add_comment(self) -> None:
         issue = self._current_issue()
         if not issue:
@@ -1577,6 +1898,35 @@ class LTUI(App):
             webbrowser.open(issue["url"])
             self.notify(f" opened {issue['identifier']}")
 
+    def action_yank(self) -> None:
+        issue = self._current_issue()
+        if not issue:
+            return
+        # old disk caches predate branchName — fall back to a sane guess
+        branch = issue.get("branchName") or issue["identifier"].lower()
+        opts = []
+        for icon, label, value in (
+            ("\ue725", "branch", branch),
+            ("\uf0c1", "url", issue.get("url") or ""),
+            ("\uf02b", "identifier", issue["identifier"]),
+        ):
+            if not value:
+                continue
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append(f"{icon} ", style=C_MAUVE)
+            row.append(label, style=C_TEXT)
+            row.append(f"  {value}", style=C_DIM)
+            opts.append(Option(row, id=value))
+
+        def done(value: str | None) -> None:
+            if not value:
+                return
+            self.copy_to_clipboard(value)
+            disp = value if len(value) <= 50 else value[:49] + "…"
+            self.notify(f" copied {escape(disp)}")
+
+        self.push_screen(PickerModal(f"yank · {issue['identifier']}", opts), done)
+
 
 HELP = """ltui - a fast, clean TUI for Linear   https://github.com/Gheat1/ltui
 
@@ -1586,8 +1936,9 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
       linear-cli's config. no key? ltui asks on first launch.
 
 keys: enter open ticket   n new   s status   p priority   c comment
-      o browser   / filter   m mine only   t theme   , settings
-      j/k navigate   g/G top/bottom   r refresh   q quit"""
+      a assign   o browser   y yank   / filter   m mine only   t theme
+      , settings   j/k navigate   g/G top/bottom   r refresh   ? help
+      q quit"""
 
 
 def main() -> None:

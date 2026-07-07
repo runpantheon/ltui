@@ -97,8 +97,24 @@ COMMENTS = [
 ]
 
 
+PARENT = {"identifier": "CORE-100", "title": "Sync engine v2"}
+
+CHILDREN = [
+    {
+        "identifier": "CORE-141",
+        "title": "Backpressure-aware scheduler core",
+        "state": ST["st-dn"],
+    },
+    {
+        "identifier": "CORE-142",
+        "title": "Move webhook fan-out onto the new scheduler",
+        "state": ST["st-ip"],
+    },
+]
+
+
 def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=None,
-          blocks=(), blocked_by=()):
+          blocks=(), blocked_by=(), parent=None):
     return {
         "id": f"i-{num}",
         "identifier": f"CORE-{num}",
@@ -106,6 +122,7 @@ def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=No
         "description": desc,
         "url": "https://linear.app/demo/issue/CORE-1",
         "priority": prio,
+        "branchName": f"nova/core-{num}-demo-branch",
         "updatedAt": ago(hours=up_h),
         "createdAt": ago(days=created_d),
         "state": ST[state],
@@ -117,12 +134,13 @@ def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=No
         "inverseRelations": {"nodes": [
             {"type": "blocks", "issue": {"identifier": b}} for b in blocked_by
         ]},
+        "parent": parent,
     }
 
 
 ISSUES = [
     # in review
-    issue(128, "Split sync engine into per-entity pipelines", "st-ir", 1, NOVA, [L_INFRA], 3, desc=DESC, blocked_by=["CORE-134"]),
+    issue(128, "Split sync engine into per-entity pipelines", "st-ir", 1, NOVA, [L_INFRA], 3, desc=DESC, blocked_by=["CORE-134"], parent={"identifier": "CORE-100"}),
     issue(131, "Rate-limit invite spam from unverified workspaces", "st-ir", 2, KAI, [L_BUG], 6, blocked_by=["CORE-130"]),
     issue(119, "New onboarding checklist — empty states + confetti", "st-ir", 3, REI, [L_UX, L_FEAT], 11),
     # in progress
@@ -162,8 +180,14 @@ class DemoApp(LTUI):
             return BOOT
         if "issues(first" in query:
             return {"team": {"issues": {"nodes": ISSUES}, "states": {"nodes": STATES}}}
+        if "members(first" in query:
+            return {"team": {"members": {"nodes": [NOVA, KAI, REI]}}}
         if "comments(first" in query:
-            return {"issue": {"comments": {"nodes": COMMENTS}}}
+            node = {"comments": {"nodes": COMMENTS}}
+            if (variables or {}).get("id") == "i-128":  # the DESC issue
+                node["parent"] = PARENT
+                node["children"] = {"nodes": CHILDREN}
+            return {"issue": node}
         return {}
 
 
@@ -171,7 +195,7 @@ def patch(theme="mocha"):
     mod.load_api_key = lambda: "demo"
     mod.read_cache = lambda name: None
     mod.write_cache = lambda name, data: None
-    mod.load_state = lambda: {"theme": theme, "mine": False, "team_id": "t-core"}
+    mod.load_state = lambda: {"theme": theme, "mine": False, "team_id": "t-core", "welcomed": True}
     mod.save_state = lambda data: None
 
 
@@ -238,6 +262,21 @@ async def onboard_shot(name, size=(148, 41)):
     print(f"  \u2713 {name}.svg")
 
 
+async def welcome_shot(name, size=(148, 41)):
+    patch("mocha")
+    # no "welcomed" key → the first-launch tour card shows
+    mod.load_state = lambda: {"theme": "mocha", "mine": False, "team_id": "t-core"}
+    app = DemoApp()
+    async with app.run_test(size=size) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if app.query_one("#issues").option_count > 0:
+                break
+        await pilot.pause(0.3)
+        app.save_screenshot(str(ASSETS / f"{name}.svg"))
+    print(f"  ✓ {name}.svg")
+
+
 async def open_themes(app, pilot):
     app.action_change_theme()
     await pilot.pause(0.3)
@@ -255,6 +294,7 @@ async def main():
     await shot("settings", size=(148, 41), drive=open_settings)
     await shot("themes", size=(148, 41), drive=open_themes)
     await onboard_shot("onboard")
+    await welcome_shot("welcome")
     await shot("theme-void", size=(148, 41), theme="void")
     await shot("theme-onyx", size=(148, 41), theme="onyx")
     print("done — convert with: for f in assets/*.svg; rsvg-convert -w 1600 $f -o (string replace .svg .png $f); end")

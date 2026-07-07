@@ -41,8 +41,12 @@ launch. ltui doesn't:
 
 |     |                                                                                     |
 | --- | ----------------------------------------------------------------------------------- |
-| 🗂️  | **smart grouping** — `In Review` → `In Progress` → `Todo` → `Backlog` → `Done` — sorted by how close work is to shipping, not alphabetically |
+| 🗂️  | **smart grouping** — `In Review` → `In Progress` → `Todo` → `Backlog` → `Done` — sorted by how close work is to shipping, freshest tickets first inside every group |
 | 👤  | **mine first** — your tickets float to the top of every group; press `m` to hide everyone else entirely |
+| 🌿  | **`y` yanks the git branch** — Linear's generated branch name straight to your clipboard (or the URL / identifier); ticket → `git checkout -b` in seconds |
+| 👥  | **assign without leaving** — `a` reassigns to anyone on the team, or you, or nobody |
+| 🌳  | **hierarchy aware** — the detail panel shows the parent ticket and all sub-issues with a done-count, next to blocked/blocking relations |
+| 🔄  | **never stale** — the board silently re-syncs every 3 minutes |
 | 📖  | **rich detail panel** — full markdown descriptions (code blocks, checklists, quotes), labels, comments — scrolls with arrows, vim keys, or mouse wheel |
 | ✏️  | **write, don't just read** — create tickets, change status & priority, add comments without leaving the terminal |
 | 🚧  | **blocked & blocking at a glance** — a red badge on tickets that are blocked, an orange one on tickets holding others up; the detail panel names the exact tickets |
@@ -117,6 +121,13 @@ already set up somewhere? ltui checks, in order:
 Your key never leaves your machine — ltui talks directly to
 `api.linear.app` and nothing else.
 
+First launch also greets you with a 20-second tour card (once, never again),
+and `?` opens the full keybinding cheatsheet whenever you need it.
+
+<div align="center">
+<img src="assets/welcome.png" alt="first-run welcome" width="60%">
+</div>
+
 ## keys
 
 | key      | action                                        |
@@ -127,14 +138,17 @@ Your key never leaves your machine — ltui talks directly to
 | `n`      | **new ticket** in the current team            |
 | `s`      | change **status**                             |
 | `p`      | change **priority**                           |
+| `a`      | change **assignee** (or unassign)             |
 | `c`      | add a **comment** (`ctrl+s` to send)          |
 | `o`      | open ticket in **browser**                    |
+| `y`      | **yank** — copy branch name / url / id        |
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
 | `t`      | cycle **theme**                               |
 | `,`      | open **settings**                             |
 | `r`      | refresh                                       |
 | `g` `G`  | jump to top / bottom                          |
+| `?`      | **help** — keybinding cheatsheet              |
 | `q`      | quit                                          |
 
 ## the detail panel
@@ -211,6 +225,7 @@ launch ──▶ render cached issues (~50ms) ──▶ you're already working
 - mutations (status, priority, new tickets) update the cache immediately —
   what you see is always what you did
 - the `↻ refreshing` badge in the border tells you when fresh data is inbound
+- the board silently re-syncs every 3 minutes, so it never goes stale
 
 ## data & privacy
 
