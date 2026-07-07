@@ -1,0 +1,17 @@
+pkgbase = ltui
+	pkgdesc = A fast, beautiful TUI for Linear — status-grouped tickets, instant startup
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/Gheat1/ltui
+	arch = any
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-wheel
+	makedepends = python-setuptools
+	depends = python-textual
+	depends = python-httpx
+	source = ltui-0.2.0.tar.gz::https://github.com/Gheat1/ltui/archive/refs/tags/v0.2.0.tar.gz
+	sha256sums = 9f5612517636bf48edb5a6254464516a1dbc760e364a5396008d4c840ba76043
+
+pkgname = ltui
