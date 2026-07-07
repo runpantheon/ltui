@@ -215,6 +215,10 @@ async def open_comment(app, pilot):
     await pilot.press("c")
 
 
+async def open_settings(app, pilot):
+    await pilot.press("comma")
+
+
 async def main():
     ASSETS.mkdir(exist_ok=True)
     print("generating demo screenshots (fake data, no network)…")
@@ -223,6 +227,7 @@ async def main():
     await shot("picker", size=(148, 41), drive=open_picker)
     await shot("new-ticket", size=(148, 41), drive=open_new)
     await shot("comment", size=(148, 41), drive=open_comment)
+    await shot("settings", size=(148, 41), drive=open_settings)
     await shot("theme-void", size=(148, 41), theme="void")
     await shot("theme-onyx", size=(148, 41), theme="onyx")
     print("done — convert with: for f in assets/*.svg; rsvg-convert -w 1600 $f -o (string replace .svg .png $f); end")

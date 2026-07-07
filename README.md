@@ -47,6 +47,7 @@ launch. ltui doesn't:
 | ✏️  | **write, don't just read** — create tickets, change status & priority, add comments without leaving the terminal |
 | 🔍  | **instant filter** — `/` fuzzy-narrows by title, identifier, or assignee as you type |
 | 🌚  | **three dark themes** — `mocha`, pure-black `void` for OLED, monochrome `onyx` — cycle with `t` |
+| ⚙️  | **profile & settings** — who you are bottom-left, `,` opens a settings panel with live theme preview, preferences, and cache controls |
 | 🧠  | **remembers everything** — last team, theme, filters persist across sessions |
 | 🔌  | **zero config** — reuses your [linear-cli](https://github.com/Finesssee/linear-cli) API key, or set `LINEAR_API_KEY` |
 
@@ -107,6 +108,7 @@ Your key never leaves your machine — ltui talks directly to
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
 | `t`      | cycle **theme**                               |
+| `,`      | open **settings**                             |
 | `r`      | refresh                                       |
 | `g` `G`  | jump to top / bottom                          |
 | `q`      | quit                                          |
@@ -129,6 +131,16 @@ slot it into the right column.
 
 <div align="center">
 <img src="assets/new-ticket.png" alt="new ticket modal" width="80%">
+</div>
+
+## settings
+
+Your profile lives bottom-left — name, org, and one-click toggles for theme
+and mine-only. Press `,` (or click ` settings`) for the full panel:
+pick a theme with **live preview**, flip preferences, clear the cache.
+
+<div align="center">
+<img src="assets/settings.png" alt="settings panel" width="80%">
 </div>
 
 ## themes

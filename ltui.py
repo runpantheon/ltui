@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import json
 import sys
@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from rich.markup import escape
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -265,6 +266,17 @@ def write_cache(name: str, data: dict) -> None:
         pass
 
 
+def clear_cache() -> int:
+    count = 0
+    try:
+        for f in CACHE_DIR.glob("*.json"):
+            f.unlink()
+            count += 1
+    except Exception:
+        pass
+    return count
+
+
 # ── widgets ───────────────────────────────────────────────────────────────
 class NavList(OptionList):
     BINDINGS = [
@@ -414,6 +426,77 @@ class NewTicketModal(ModalScreen):
 
 
 # ── app ───────────────────────────────────────────────────────────────────
+class SettingsModal(ModalScreen):
+    BINDINGS = [Binding("escape", "close_modal", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="settings-box"):
+            yield Static(id="settings-profile")
+            yield NavList(id="settings-list")
+            yield Static(id="settings-foot")
+
+    def on_mount(self) -> None:
+        app = self.app
+        profile = Text()
+        profile.append(" ", style=C_BLUE)
+        profile.append(getattr(app, "_viewer_name", None) or "…", style=f"bold {C_TEXT}")
+        org = getattr(app, "_org", None)
+        if org:
+            profile.append(f"  ·  {org}", style=C_DIM)
+        self.query_one("#settings-profile", Static).update(profile)
+        foot = Text()
+        foot.append(f"ltui {__version__}", style=C_DIM)
+        foot.append("  ·  cache ~/.cache/ltui", style=C_VFAINT)
+        self.query_one("#settings-foot", Static).update(foot)
+        self._build()
+        self.query_one("#settings-list").focus()
+
+    def _build(self) -> None:
+        app = self.app
+        ol = self.query_one("#settings-list", NavList)
+        prev = ol.highlighted
+        ol.clear_options()
+        opts: list[Option] = [
+            Option(Text(" theme", style=f"bold {C_SUB}"), disabled=True)
+        ]
+        for name in THEME_NAMES:
+            active = app.theme == name
+            row = Text("   ")
+            row.append("● " if active else "○ ", style=C_BLUE if active else C_DIM)
+            row.append(name, style=C_TEXT if active else C_SUB)
+            opts.append(Option(row, id=f"theme:{name}"))
+        opts.append(Option(Text(" "), disabled=True))
+        opts.append(Option(Text(" preferences", style=f"bold {C_SUB}"), disabled=True))
+        mine = getattr(app, "_mine", False)
+        row = Text("   ")
+        row.append("● " if mine else "○ ", style=C_GREEN if mine else C_DIM)
+        row.append("mine only", style=C_TEXT if mine else C_SUB)
+        opts.append(Option(row, id="pref:mine"))
+        opts.append(Option(Text(" "), disabled=True))
+        opts.append(Option(Text(" maintenance", style=f"bold {C_SUB}"), disabled=True))
+        opts.append(Option(Text("    clear cache", style=C_SUB), id="cache:clear"))
+        ol.add_options(opts)
+        ol.highlighted = prev if prev is not None else 1
+
+    @on(OptionList.OptionSelected)
+    def _selected(self, event: OptionList.OptionSelected) -> None:
+        app = self.app
+        oid = event.option.id or ""
+        if oid.startswith("theme:"):
+            app.theme = oid.split(":", 1)[1]
+            app._save_state()
+            app._update_profile()
+        elif oid == "pref:mine":
+            app.action_toggle_mine()
+        elif oid == "cache:clear":
+            count = clear_cache()
+            app.notify(f" cleared {count} cached file(s)")
+        self._build()
+
+    def action_close_modal(self) -> None:
+        self.dismiss(None)
+
+
 HINT = (
     f"[@click=app.change_status][{C_BLUE}]s[/] [{C_DIM}]status[/][/]  "
     f"[@click=app.change_priority][{C_BLUE}]p[/] [{C_DIM}]priority[/][/]  "
@@ -433,6 +516,7 @@ class LTUI(App):
         Binding("slash", "filter", "filter"),
         Binding("m", "toggle_mine", "mine"),
         Binding("t", "cycle_theme", "theme"),
+        Binding("comma", "open_settings", show=False),
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", show=False),
         Binding("p", "change_priority", show=False),
@@ -444,11 +528,16 @@ class LTUI(App):
     #appheader {{ height: 1; padding: 0 2; }}
     #main {{ height: 1fr; }}
 
-    #sidebar {{
-        width: 24; margin: 0 0 0 1;
+    #sidebar {{ width: 24; margin: 0 0 0 1; }}
+    #teams {{
+        height: 1fr;
         border: round $ltui-border; border-title-color: {C_SUB};
     }}
-    #sidebar:focus-within {{ border: round $ltui-border-focus; border-title-color: $ltui-border-focus; }}
+    #teams:focus {{ border: round $ltui-border-focus; border-title-color: $ltui-border-focus; }}
+    #profile {{
+        height: auto; padding: 0 1;
+        border: round $ltui-border; border-title-color: {C_SUB};
+    }}
 
     #centre {{
         width: 1fr; margin: 0 1;
@@ -522,6 +611,15 @@ class LTUI(App):
     #ticket-actions {{ height: 3; margin: 1 0 0 0; }}
     #ticket-hint {{ width: 1fr; padding: 1 0; }}
     #ticket-actions Button {{ margin: 0 0 0 2; min-width: 10; }}
+
+    SettingsModal {{ align: center middle; background: black 40%; }}
+    #settings-box {{
+        width: 42; height: auto; max-height: 85%;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
+    }}
+    #settings-profile {{ padding: 0 1 1 1; }}
+    #settings-list {{ height: auto; max-height: 16; }}
+    #settings-foot {{ padding: 1 1 0 1; }}
     """
 
     def __init__(self) -> None:
@@ -532,6 +630,8 @@ class LTUI(App):
         self._states: list[dict] = []
         self._team: dict | None = None
         self._viewer_id: str | None = None
+        self._viewer_name: str | None = None
+        self._org: str | None = None
         self._mine = load_state().get("mine", False)
         self._filter = ""
         self._detail_issue: dict | None = None
@@ -553,6 +653,7 @@ class LTUI(App):
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
                 yield NavList(id="teams")
+                yield Static(id="profile")
             with Vertical(id="centre"):
                 yield FilterInput(placeholder=" filter issues…", id="filter")
                 yield NavList(id="issues")
@@ -571,8 +672,10 @@ class LTUI(App):
             self.register_theme(t)
         saved = load_state().get("theme")
         self.theme = saved if saved in THEME_NAMES else THEME_NAMES[0]
-        self.query_one("#sidebar").border_title = " teams "
+        self.query_one("#teams").border_title = " teams "
+        self.query_one("#profile").border_title = " you "
         self.query_one("#centre").border_title = " issues "
+        self._update_profile()
         self.query_one("#issues").focus()
         try:
             key = load_api_key()
@@ -608,6 +711,9 @@ class LTUI(App):
     def _render_boot(self, data: dict) -> None:
         self._teams = data["teams"]["nodes"]
         self._viewer_id = data["viewer"]["id"]
+        self._viewer_name = data["viewer"]["displayName"]
+        self._org = data["organization"]["name"]
+        self._update_profile()
         header = Text(" ")
         header.append(" ltui", style=f"bold {C_BLUE}")
         header.append("  ·  ", style=C_VFAINT)
@@ -1023,10 +1129,29 @@ class LTUI(App):
         if self._team:
             self.load_team(self._team)
 
+    def _update_profile(self) -> None:
+        name = escape(self._viewer_name or "…")
+        org = escape(self._org or "connecting")
+        mine = "on" if self._mine else "off"
+        mine_color = C_GREEN if self._mine else C_DIM
+        self.query_one("#profile", Static).update(
+            f"[bold {C_TEXT}] {name}[/]\n"
+            f"[{C_DIM}] {org}[/]\n"
+            f"[@click=app.cycle_theme][{C_SUB}] [/][{C_SUB}]{self.theme}[/][/]\n"
+            f"[@click=app.toggle_mine][{C_SUB}] mine [/][{mine_color}]{mine}[/][/]\n"
+            f"[@click=app.open_settings][{C_BLUE}] settings[/][/]"
+        )
+
+    def action_open_settings(self) -> None:
+        if isinstance(self.screen, SettingsModal):
+            return
+        self.push_screen(SettingsModal())
+
     def action_cycle_theme(self) -> None:
         idx = THEME_NAMES.index(self.theme) if self.theme in THEME_NAMES else -1
         self.theme = THEME_NAMES[(idx + 1) % len(THEME_NAMES)]
         self._save_state()
+        self._update_profile()
         self.notify(f" theme → {self.theme}")
 
     def action_new_ticket(self) -> None:
@@ -1043,6 +1168,7 @@ class LTUI(App):
     def action_toggle_mine(self) -> None:
         self._mine = not self._mine
         self._save_state()
+        self._update_profile()
         self.render_issues()
 
     def action_filter(self) -> None:
