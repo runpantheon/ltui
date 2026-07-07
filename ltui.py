@@ -1921,6 +1921,10 @@ class LTUI(App):
             self.load_team(self._team)
 
     def _tick_fx(self) -> None:
+        try:
+            self.query_one("#profile")
+        except Exception:
+            return  # DOM not ready or tearing down — timers can outlive it
         # name wave: sweep, rest, repeat — renders only while sweeping
         if self._viewer_name:
             if self._wave_rest > 0:
