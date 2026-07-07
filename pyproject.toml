@@ -7,7 +7,7 @@ name = "ltui-linear"
 version = "0.12.0"
 description = "A fast, beautiful TUI for Linear — grouped by status, instant startup, full keyboard + mouse control"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Gheat" }]
 requires-python = ">=3.11"
 dependencies = [
@@ -18,7 +18,7 @@ keywords = ["linear", "tui", "terminal", "textual", "issue-tracker", "productivi
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Topic :: Terminals",
     "Topic :: Software Development :: Bug Tracking",
