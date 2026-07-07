@@ -1,6 +1,6 @@
 # Maintainer: Gheat <skyegamer367@gmail.com>
 pkgname=ltui
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="A fast, beautiful TUI for Linear — status-grouped tickets, instant startup"
 arch=('any')
@@ -9,7 +9,7 @@ license=('MIT')
 depends=('python-textual' 'python-httpx')
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('9f5612517636bf48edb5a6254464516a1dbc760e364a5396008d4c840ba76043')
+sha256sums=('082f58934d0f4260cbb257386b108e0d0782264bdccdaca39a5e8f8e74d2297e')
 
 build() {
   cd "$pkgname-$pkgver"
