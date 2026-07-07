@@ -47,7 +47,7 @@ launch. ltui doesn't:
 | ✏️  | **write, don't just read** — create tickets, change status & priority, add comments without leaving the terminal |
 | 🚧  | **blocked & blocking at a glance** — a red badge on tickets that are blocked, an orange one on tickets holding others up; the detail panel names the exact tickets |
 | 🔍  | **instant filter** — `/` fuzzy-narrows by title, identifier, or assignee as you type |
-| 🌚  | **four themes** — `mocha`, pure-black `void`, monochrome `onyx`, and `clear` (no background — your terminal's transparency/blur shows through) — cycle with `t` |
+| 🌚  | **five themes** — `mocha`, pure-black `void`, monochrome `onyx`, `clear` (no background — your terminal's transparency/blur shows through), and `system` (drawn in your terminal's own ANSI palette: your kitty theme *is* the ltui theme) — cycle with `t` |
 | ⚙️  | **profile & settings** — who you are bottom-left, `,` opens a settings panel with live theme preview, preferences, and cache controls |
 | 🧠  | **remembers everything** — last team, theme, filters persist across sessions |
 | 🔌  | **zero config** — reuses your [linear-cli](https://github.com/Finesssee/linear-cli) API key, or set `LINEAR_API_KEY` |
@@ -174,9 +174,16 @@ Cycle with `t`. Your choice sticks.
 | --- | --- | --- |
 | ![mocha](assets/list.png) | ![void](assets/theme-void.png) | ![onyx](assets/theme-onyx.png) |
 
-And the fourth one can't be screenshotted honestly: **`clear`** paints **no
-background at all** — ltui runs on your terminal's own background, so if your
-terminal is transparent or blurred, ltui is too. Made for rice.
+Two of them can't be screenshotted honestly:
+
+- **`clear`** paints **no background at all** — ltui runs on your terminal's
+  own background, so if your terminal is transparent or blurred, ltui is too.
+- **`system`** goes further: the whole UI chrome is drawn in your terminal's
+  **ANSI palette** (plus the transparent background) — whatever theme your
+  kitty/alacritty/ghostty is running, ltui matches it automatically. Ticket
+  data (state colors, labels) stays true to Linear.
+
+Made for rice.
 
 Not enough? `ctrl+p` → *Change theme* opens the theme picker with **every
 built-in Textual theme** — nord, gruvbox, dracula, tokyo-night, rose-pine, the

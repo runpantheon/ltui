@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ltui-linear"
-version = "0.4.2"
+version = "0.5.0"
 description = "A fast, beautiful TUI for Linear — grouped by status, instant startup, full keyboard + mouse control"
 readme = "README.md"
 license = { text = "MIT" }

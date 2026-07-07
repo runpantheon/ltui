@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 import json
 import sys
@@ -42,6 +42,22 @@ C_PEACH = "#fab387"
 C_GREEN = "#a6e3a1"
 C_RED = "#f38ba8"
 C_MAUVE = "#cba6f7"
+
+_PALETTE = dict(
+    C_TEXT=C_TEXT, C_SUB=C_SUB, C_DIM=C_DIM, C_FAINT=C_FAINT, C_VFAINT=C_VFAINT,
+    C_BLUE=C_BLUE, C_LAV=C_LAV, C_PEACH=C_PEACH, C_GREEN=C_GREEN, C_RED=C_RED,
+    C_MAUVE=C_MAUVE,
+)
+_PALETTE_ANSI = dict(
+    C_TEXT="default", C_SUB="white", C_DIM="bright_black", C_FAINT="bright_black",
+    C_VFAINT="bright_black", C_BLUE="blue", C_LAV="bright_blue", C_PEACH="yellow",
+    C_GREEN="green", C_RED="red", C_MAUVE="magenta",
+)
+
+
+def set_palette(ansi: bool) -> None:
+    """Swap the chrome palette; `system` draws it in terminal ANSI colors."""
+    globals().update(_PALETTE_ANSI if ansi else _PALETTE)
 
 # ── themes ────────────────────────────────────────────────────────────────
 _ACCENTS = dict(
@@ -104,6 +120,23 @@ THEMES = [
             "ltui-border-detail": "#a9b1c0",
             "ltui-modal-bg": "#16161d",
             "ltui-cursor": "#282c38",
+            "ltui-overlay": "transparent",
+        },
+    ),
+    # your terminal's own ANSI palette + no background: a custom kitty /
+    # alacritty theme becomes the ltui theme
+    Theme(
+        name="system",
+        primary="ansi_blue", secondary="ansi_magenta", accent="ansi_cyan",
+        background="ansi_default", surface="ansi_default", panel="ansi_default",
+        foreground="ansi_default",
+        success="ansi_green", warning="ansi_yellow", error="ansi_red", dark=True,
+        variables={
+            "ltui-border": "ansi_bright_black",
+            "ltui-border-focus": "ansi_blue",
+            "ltui-border-detail": "ansi_bright_blue",
+            "ltui-modal-bg": "ansi_black",
+            "ltui-cursor": "ansi_bright_black",
             "ltui-overlay": "transparent",
         },
     ),
@@ -578,13 +611,14 @@ class SettingsModal(ModalScreen):
         self.dismiss(None)
 
 
-HINT = (
-    f"[@click=app.change_status][{C_BLUE}]s[/] [{C_DIM}]status[/][/]  "
-    f"[@click=app.change_priority][{C_BLUE}]p[/] [{C_DIM}]priority[/][/]  "
-    f"[@click=app.add_comment][{C_BLUE}]c[/] [{C_DIM}]comment[/][/]  "
-    f"[@click=app.open_browser][{C_BLUE}]o[/] [{C_DIM}]browser[/][/]  "
-    f"[@click=app.back][{C_BLUE}]esc[/] [{C_DIM}]close[/][/]"
-)
+def hint_markup() -> str:
+    return (
+        f"[@click=app.change_status][{C_BLUE}]s[/] [{C_DIM}]status[/][/]  "
+        f"[@click=app.change_priority][{C_BLUE}]p[/] [{C_DIM}]priority[/][/]  "
+        f"[@click=app.add_comment][{C_BLUE}]c[/] [{C_DIM}]comment[/][/]  "
+        f"[@click=app.open_browser][{C_BLUE}]o[/] [{C_DIM}]browser[/][/]  "
+        f"[@click=app.back][{C_BLUE}]esc[/] [{C_DIM}]close[/][/]"
+    )
 
 
 class LTUI(App):
@@ -727,6 +761,7 @@ class LTUI(App):
         self._team: dict | None = None
         self._viewer_id: str | None = None
         self._viewer_name: str | None = None
+        self._boot_data: dict | None = None
         self._org: str | None = None
         self._mine = load_state().get("mine", False)
         self._filter = ""
@@ -737,8 +772,22 @@ class LTUI(App):
     def _on_theme_changed(self, _theme) -> None:
         # ansi-background themes (clear, ansi-dark, …) need ansi_color mode
         # so default-color codes pass through and the terminal bg shows
+        set_palette(self.theme == "system")
         self.ansi_color = self._theme_is_ansi()
+        if self._boot_data is not None:
+            self._render_boot(self._boot_data)
         self._update_profile()
+        try:
+            self.query_one("#d-hint", Static).update(hint_markup())
+        except Exception:
+            pass
+        if self._issues:
+            self.render_issues()
+        if self._detail_issue is not None:
+            self.query_one("#d-title", Static).update(
+                Text(self._detail_issue["title"], style=f"bold {C_TEXT}")
+            )
+            self._update_detail_meta(self._detail_issue)
         # persist every path (t, palette, picker) but not mid-preview;
         # ThemeModal commits or reverts on close
         if not isinstance(self.screen, ThemeModal):
@@ -779,7 +828,7 @@ class LTUI(App):
                     yield Markdown(id="d-desc")
                     yield Static(id="d-comments-head")
                     yield Vertical(id="d-comments")
-                yield Static(HINT, id="d-hint")
+                yield Static(hint_markup(), id="d-hint")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -826,6 +875,7 @@ class LTUI(App):
 
     # ── workers ───────────────────────────────────────────────────────
     def _render_boot(self, data: dict) -> None:
+        self._boot_data = data
         self._teams = data["teams"]["nodes"]
         self._viewer_id = data["viewer"]["id"]
         self._viewer_name = data["viewer"]["displayName"]
