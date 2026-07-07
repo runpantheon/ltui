@@ -158,8 +158,8 @@ slot it into the right column.
 ## settings
 
 Your profile lives bottom-left — name, org, and one-click toggles for theme
-and mine-only. Press `,` (or click ` settings`) for the full panel:
-pick a theme with **live preview**, flip preferences, clear the cache.
+and mine-only. Press `,` (or click ` settings`) for the panel:
+flip preferences, clear the cache.
 
 <div align="center">
 <img src="assets/settings.png" alt="settings panel" width="80%">
@@ -177,10 +177,10 @@ And the fourth one can't be screenshotted honestly: **`clear`** paints **no
 background at all** — ltui runs on your terminal's own background, so if your
 terminal is transparent or blurred, ltui is too. Made for rice.
 
-Not enough? The settings panel (`,`) also lists **every built-in Textual
-theme** — nord, gruvbox, dracula, tokyo-night, rose-pine, the whole catppuccin
-family and more — all with live preview. `t` keeps cycling the four ltui
-themes; anything else you pick sticks until you change it.
+Not enough? The command palette (`ctrl+p` → *Change theme*) also offers
+**every built-in Textual theme** — nord, gruvbox, dracula, tokyo-night,
+rose-pine, the whole catppuccin family and more — with live preview. `t` keeps
+cycling the four ltui themes; anything else you pick sticks until you change it.
 
 ## how it's fast
 

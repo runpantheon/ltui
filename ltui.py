@@ -479,28 +479,9 @@ class SettingsModal(ModalScreen):
         ol = self.query_one("#settings-list", NavList)
         prev = ol.highlighted
         ol.clear_options()
-        def theme_row(name: str) -> Option:
-            active = app.theme == name
-            row = Text("   ")
-            row.append("● " if active else "○ ", style=C_BLUE if active else C_DIM)
-            row.append(name, style=C_TEXT if active else C_SUB)
-            return Option(row, id=f"theme:{name}")
-
         opts: list[Option] = [
-            Option(Text(" theme", style=f"bold {C_SUB}"), disabled=True)
+            Option(Text(" preferences", style=f"bold {C_SUB}"), disabled=True)
         ]
-        for name in THEME_NAMES:
-            opts.append(theme_row(name))
-        extra = sorted(n for n in app.available_themes if n not in THEME_NAMES)
-        if extra:
-            opts.append(Option(Text(" "), disabled=True))
-            opts.append(
-                Option(Text(" more themes", style=f"bold {C_SUB}"), disabled=True)
-            )
-            for name in extra:
-                opts.append(theme_row(name))
-        opts.append(Option(Text(" "), disabled=True))
-        opts.append(Option(Text(" preferences", style=f"bold {C_SUB}"), disabled=True))
         mine = getattr(app, "_mine", False)
         row = Text("   ")
         row.append("● " if mine else "○ ", style=C_GREEN if mine else C_DIM)
@@ -516,11 +497,7 @@ class SettingsModal(ModalScreen):
     def _selected(self, event: OptionList.OptionSelected) -> None:
         app = self.app
         oid = event.option.id or ""
-        if oid.startswith("theme:"):
-            app.theme = oid.split(":", 1)[1]
-            app._save_state()
-            app._update_profile()
-        elif oid == "pref:mine":
+        if oid == "pref:mine":
             app.action_toggle_mine()
         elif oid == "cache:clear":
             count = clear_cache()
@@ -679,6 +656,14 @@ class LTUI(App):
         self._opt_index: dict[str, int] = {}
         self._issue_by_id: dict[str, dict] = {}
 
+    def _on_theme_changed(self, _theme) -> None:
+        # ansi-background themes (clear, ansi-dark, …) need ansi_color mode
+        # so default-color codes pass through and the terminal bg shows
+        self.ansi_color = self._theme_is_ansi()
+        # themes can change from the command palette too — persist every path
+        self._save_state()
+        self._update_profile()
+
     def _theme_is_ansi(self) -> bool:
         theme = self.available_themes.get(self.theme)
         if theme is None or theme.background is None:
@@ -720,11 +705,7 @@ class LTUI(App):
     def on_mount(self) -> None:
         for t in THEMES:
             self.register_theme(t)
-        # ansi-background themes (clear, ansi-dark, …) need ansi_color mode
-        # so default-color codes pass through and the terminal bg shows
-        self.theme_changed_signal.subscribe(
-            self, lambda _t: setattr(self, "ansi_color", self._theme_is_ansi())
-        )
+        self.theme_changed_signal.subscribe(self, self._on_theme_changed)
         saved = load_state().get("theme")
         self.theme = saved if saved in self.available_themes else THEME_NAMES[0]
         self.ansi_color = self._theme_is_ansi()
@@ -1206,8 +1187,6 @@ class LTUI(App):
     def action_cycle_theme(self) -> None:
         idx = THEME_NAMES.index(self.theme) if self.theme in THEME_NAMES else -1
         self.theme = THEME_NAMES[(idx + 1) % len(THEME_NAMES)]
-        self._save_state()
-        self._update_profile()
         self.notify(f" theme → {self.theme}")
 
     def action_new_ticket(self) -> None:
