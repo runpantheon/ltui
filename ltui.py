@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 import json
 import sys
@@ -466,6 +466,59 @@ class NewTicketModal(ModalScreen):
 
 
 # ── app ───────────────────────────────────────────────────────────────────
+class ThemeModal(ModalScreen):
+    """Theme picker — highlighting a theme previews it live."""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="theme-box"):
+            yield Static("theme \u00b7 scroll to preview", id="theme-title")
+            yield NavList(id="theme-list")
+
+    def _row(self, name: str, active: str) -> Option:
+        row = Text("  ")
+        row.append("\u25cf " if name == active else "\u25cb ", style=C_BLUE if name == active else C_DIM)
+        row.append(name, style=C_TEXT if name == active else C_SUB)
+        return Option(row, id=name)
+
+    def on_mount(self) -> None:
+        app = self.app
+        self._original = app.theme
+        ol = self.query_one("#theme-list", NavList)
+        opts = [Option(Text(" ltui", style=f"bold {C_SUB}"), disabled=True)]
+        index_of = {}
+        for name in THEME_NAMES:
+            index_of[name] = len(opts)
+            opts.append(self._row(name, self._original))
+        extra = sorted(n for n in app.available_themes if n not in THEME_NAMES)
+        if extra:
+            opts.append(Option(Text(" "), disabled=True))
+            opts.append(Option(Text(" textual", style=f"bold {C_SUB}"), disabled=True))
+            for name in extra:
+                index_of[name] = len(opts)
+                opts.append(self._row(name, self._original))
+        ol.add_options(opts)
+        ol.highlighted = index_of.get(self._original, 1)
+        ol.focus()
+
+    @on(OptionList.OptionHighlighted, "#theme-list")
+    def _preview(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option.id:
+            self.app.theme = event.option.id
+
+    @on(OptionList.OptionSelected, "#theme-list")
+    def _select(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id:
+            self.app.theme = event.option.id
+        self.dismiss(True)
+        self.app._save_state()
+
+    def action_cancel(self) -> None:
+        self.app.theme = self._original
+        self.dismiss(False)
+
+
 class SettingsModal(ModalScreen):
     BINDINGS = [Binding("escape", "close_modal", show=False)]
 
@@ -647,6 +700,14 @@ class LTUI(App):
     #ticket-hint {{ width: 1fr; padding: 1 0; }}
     #ticket-actions Button {{ margin: 0 0 0 2; min-width: 10; }}
 
+    ThemeModal {{ align: center middle; background: $ltui-overlay; }}
+    #theme-box {{
+        width: 40; height: auto; max-height: 85%;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
+    }}
+    #theme-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
+    #theme-list {{ height: auto; max-height: 18; }}
+
     SettingsModal {{ align: center middle; background: $ltui-overlay; }}
     #settings-box {{
         width: 42; height: auto; max-height: 85%;
@@ -677,9 +738,11 @@ class LTUI(App):
         # ansi-background themes (clear, ansi-dark, …) need ansi_color mode
         # so default-color codes pass through and the terminal bg shows
         self.ansi_color = self._theme_is_ansi()
-        # themes can change from the command palette too — persist every path
-        self._save_state()
         self._update_profile()
+        # persist every path (t, palette, picker) but not mid-preview;
+        # ThemeModal commits or reverts on close
+        if not isinstance(self.screen, ThemeModal):
+            self._save_state()
 
     def _theme_is_ansi(self) -> bool:
         theme = self.available_themes.get(self.theme)
@@ -1209,7 +1272,7 @@ class LTUI(App):
         self.query_one("#profile", Static).update(
             f"[bold {C_TEXT}] {name}[/]\n"
             f"[{C_DIM}] {org}[/]\n"
-            f"[@click=app.cycle_theme][{C_SUB}] [/][{C_SUB}]{self.theme}[/][/]\n"
+            f"[@click=app.change_theme][{C_SUB}] [/][{C_SUB}]{self.theme}[/][/]\n"
             f"[@click=app.toggle_mine][{C_SUB}] mine [/][{mine_color}]{mine}[/][/]\n"
             f"[@click=app.open_settings][{C_BLUE}] settings[/][/]"
         )
@@ -1218,6 +1281,11 @@ class LTUI(App):
         if isinstance(self.screen, SettingsModal):
             return
         self.push_screen(SettingsModal())
+
+    def action_change_theme(self) -> None:
+        if isinstance(self.screen, ThemeModal):
+            return
+        self.push_screen(ThemeModal())
 
     def action_cycle_theme(self) -> None:
         idx = THEME_NAMES.index(self.theme) if self.theme in THEME_NAMES else -1
