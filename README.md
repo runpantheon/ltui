@@ -46,7 +46,7 @@ launch. ltui doesn't:
 | 📖  | **rich detail panel** — full markdown descriptions (code blocks, checklists, quotes), labels, comments — scrolls with arrows, vim keys, or mouse wheel |
 | ✏️  | **write, don't just read** — create tickets, change status & priority, add comments without leaving the terminal |
 | 🔍  | **instant filter** — `/` fuzzy-narrows by title, identifier, or assignee as you type |
-| 🌚  | **three dark themes** — `mocha`, pure-black `void` for OLED, monochrome `onyx` — cycle with `t` |
+| 🌚  | **four themes** — `mocha`, pure-black `void`, monochrome `onyx`, and `clear` (no background — your terminal's transparency/blur shows through) — cycle with `t` |
 | ⚙️  | **profile & settings** — who you are bottom-left, `,` opens a settings panel with live theme preview, preferences, and cache controls |
 | 🧠  | **remembers everything** — last team, theme, filters persist across sessions |
 | 🔌  | **zero config** — reuses your [linear-cli](https://github.com/Finesssee/linear-cli) API key, or set `LINEAR_API_KEY` |
@@ -172,6 +172,10 @@ Cycle with `t`. Your choice sticks.
 |  `mocha` — catppuccin warmth | `void` — pure black, OLED bait | `onyx` — monochrome steel |
 | --- | --- | --- |
 | ![mocha](assets/list.png) | ![void](assets/theme-void.png) | ![onyx](assets/theme-onyx.png) |
+
+And the fourth one can't be screenshotted honestly: **`clear`** paints **no
+background at all** — ltui runs on your terminal's own background, so if your
+terminal is transparent or blurred, ltui is too. Made for rice.
 
 ## how it's fast
 

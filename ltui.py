@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import json
 import sys
@@ -58,6 +58,7 @@ THEMES = [
             "ltui-border-focus": C_BLUE,
             "ltui-border-detail": C_LAV,
             "ltui-modal-bg": "#181825",
+            "ltui-overlay": "black 40%",
         },
     ),
     Theme(
@@ -70,6 +71,7 @@ THEMES = [
             "ltui-border-focus": C_BLUE,
             "ltui-border-detail": C_LAV,
             "ltui-modal-bg": "#0a0a10",
+            "ltui-overlay": "black 40%",
         },
     ),
     Theme(
@@ -82,6 +84,22 @@ THEMES = [
             "ltui-border-focus": "#9aa5b5",
             "ltui-border-detail": "#b8c0cc",
             "ltui-modal-bg": "#141419",
+            "ltui-overlay": "black 40%",
+        },
+    ),
+    # no background at all — the terminal's own background (and any
+    # blur/transparency it has) shows through
+    Theme(
+        name="clear",
+        primary=C_BLUE, secondary=C_MAUVE, accent="#f5c2e7",
+        background="ansi_default", surface="ansi_default", panel="ansi_default",
+        foreground=C_TEXT, **_ACCENTS,
+        variables={
+            "ltui-border": "#45475a",
+            "ltui-border-focus": C_BLUE,
+            "ltui-border-detail": C_LAV,
+            "ltui-modal-bg": "#181825",
+            "ltui-overlay": "transparent",
         },
     ),
 ]
@@ -578,7 +596,7 @@ class LTUI(App):
     .comment Markdown {{ padding: 0; margin: 0; }}
     #d-hint {{ height: 1; padding: 0 1; margin: 1 0 0 0; }}
 
-    PickerModal {{ align: center middle; background: black 40%; }}
+    PickerModal {{ align: center middle; background: $ltui-overlay; }}
     #picker-box {{
         width: 44; height: auto; max-height: 80%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
@@ -586,7 +604,7 @@ class LTUI(App):
     #picker-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
     #picker-list {{ height: auto; max-height: 14; }}
 
-    CommentModal {{ align: center middle; background: black 40%; }}
+    CommentModal {{ align: center middle; background: $ltui-overlay; }}
     #comment-box {{
         width: 72; height: 20;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
@@ -598,7 +616,7 @@ class LTUI(App):
     #comment-hint {{ width: 1fr; padding: 1 0; }}
     #comment-actions Button {{ margin: 0 0 0 2; min-width: 10; }}
 
-    NewTicketModal {{ align: center middle; background: black 40%; }}
+    NewTicketModal {{ align: center middle; background: $ltui-overlay; }}
     #ticket-box {{
         width: 72; height: 24;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
@@ -612,7 +630,7 @@ class LTUI(App):
     #ticket-hint {{ width: 1fr; padding: 1 0; }}
     #ticket-actions Button {{ margin: 0 0 0 2; min-width: 10; }}
 
-    SettingsModal {{ align: center middle; background: black 40%; }}
+    SettingsModal {{ align: center middle; background: $ltui-overlay; }}
     #settings-box {{
         width: 42; height: auto; max-height: 85%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
@@ -670,8 +688,14 @@ class LTUI(App):
     def on_mount(self) -> None:
         for t in THEMES:
             self.register_theme(t)
+        # "clear" uses ansi_default colors; ansi_color mode passes them
+        # through untranslated so the terminal's own background shows
+        self.theme_changed_signal.subscribe(
+            self, lambda _t: setattr(self, "ansi_color", self.theme == "clear")
+        )
         saved = load_state().get("theme")
         self.theme = saved if saved in THEME_NAMES else THEME_NAMES[0]
+        self.ansi_color = self.theme == "clear"
         self.query_one("#teams").border_title = " teams "
         self.query_one("#profile").border_title = " you "
         self.query_one("#centre").border_title = " issues "
