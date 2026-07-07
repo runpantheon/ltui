@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 import json
 import sys
@@ -198,6 +198,7 @@ ISSUE_FIELDS = """
         labels(first: 6) { nodes { name color } }
         relations(first: 6) { nodes { type relatedIssue { identifier } } }
         inverseRelations(first: 6) { nodes { type issue { identifier } } }
+        project { id name color }
         parent { identifier }
 """
 
@@ -877,6 +878,7 @@ class HelpModal(ModalScreen):
         ("view", [
             ("/", "filter issues"),
             ("m", "toggle mine only"),
+            ("v", "group by status / project"),
             ("t", "cycle theme"),
             (",", "settings"),
             ("r", "refresh"),
@@ -985,6 +987,7 @@ class LTUI(App):
         Binding("c", "add_comment", "comment"),
         Binding("slash", "filter", "filter"),
         Binding("m", "toggle_mine", "mine"),
+        Binding("v", "toggle_group", "group"),
         Binding("t", "cycle_theme", "theme"),
         Binding("comma", "open_settings", show=False),
         Binding("question_mark", "help", "help"),
@@ -1168,6 +1171,7 @@ class LTUI(App):
         self._boot_data: dict | None = None
         self._org: str | None = None
         self._mine = load_state().get("mine", False)
+        self._group_by = load_state().get("group_by", "status")
         self._filter = ""
         self._detail_issue: dict | None = None
         self._wave_pos = -1
@@ -1388,6 +1392,7 @@ class LTUI(App):
             data["team_id"] = self._team["id"]
         data["mine"] = self._mine
         data["theme"] = self.theme
+        data["group_by"] = self._group_by
         save_state(data)
 
     def _write_team_cache(self) -> None:
@@ -1651,29 +1656,55 @@ class LTUI(App):
                 ).lower()
             ]
 
-        by_state: dict[str, list[dict]] = {}
-        state_of: dict[str, dict] = {}
-        for i in issues:
-            sid = i["state"]["id"]
-            by_state.setdefault(sid, []).append(i)
-            state_of[sid] = i["state"]
-        ordered = sorted(state_of.values(), key=state_sort_key)
+        def mine_first(i: dict):
+            is_mine = (i.get("assignee") or {}).get("id") == self._viewer_id
+            return (0 if is_mine else 1, *issue_sort_key(i))
+
+        if self._group_by == "project":
+            # group by project; inside a project keep the status order,
+            # then mine-first + recency
+            by_proj: dict[str, list[dict]] = {}
+            proj_of: dict[str, dict] = {}
+            for i in issues:
+                p = i.get("project") or {"id": "", "name": "no project", "color": None}
+                by_proj.setdefault(p["id"], []).append(i)
+                proj_of[p["id"]] = p
+            # biggest projects first, the no-project bucket last
+            ordered_groups = sorted(
+                proj_of.values(),
+                key=lambda p: (p["id"] == "", -len(by_proj[p["id"]])),
+            )
+            def in_group_key(i: dict):
+                return (state_sort_key(i["state"]), *mine_first(i))
+            groups = [
+                (self._project_header_row(p, len(by_proj[p["id"]]), width),
+                 sorted(by_proj[p["id"]], key=in_group_key))
+                for p in ordered_groups
+            ]
+        else:
+            by_state: dict[str, list[dict]] = {}
+            state_of: dict[str, dict] = {}
+            for i in issues:
+                sid = i["state"]["id"]
+                by_state.setdefault(sid, []).append(i)
+                state_of[sid] = i["state"]
+            ordered_states = sorted(state_of.values(), key=state_sort_key)
+            groups = [
+                (self._header_row(st, len(by_state[st["id"]]), width),
+                 sorted(by_state[st["id"]], key=mine_first))
+                for st in ordered_states
+            ]
 
         id_w = max((len(i["identifier"]) for i in issues), default=6)
         ol.clear_options()
         self._opt_index = {}
         opts: list[Option] = []
         first = True
-        def mine_first(i: dict):
-            is_mine = (i.get("assignee") or {}).get("id") == self._viewer_id
-            return (0 if is_mine else 1, *issue_sort_key(i))
-
-        for st in ordered:
-            group = sorted(by_state[st["id"]], key=mine_first)
+        for header, group in groups:
             if not first:
                 opts.append(Option(Text(" "), disabled=True))
             first = False
-            opts.append(Option(self._header_row(st, len(group), width), disabled=True))
+            opts.append(Option(header, disabled=True))
             for i in group:
                 self._opt_index[i["id"]] = len(opts)
                 opts.append(Option(self._issue_row(i, width, id_w), id=i["id"]))
@@ -1698,6 +1729,17 @@ class LTUI(App):
         fill = width - t.cell_len - 1
         if fill > 0:
             t.append("─" * fill, style=C_FAINT)
+        return t
+
+    def _project_header_row(self, project: dict, count: int, width: int) -> Text:
+        color = project.get("color") or C_DIM
+        t = Text(no_wrap=True, overflow="ellipsis")
+        t.append("\uf07b ", style=color)
+        t.append(project["name"], style=f"bold {color}")
+        t.append(f" \u00b7 {count} ", style=C_DIM)
+        fill = width - t.cell_len - 1
+        if fill > 0:
+            t.append("\u2500" * fill, style=C_FAINT)
         return t
 
     def _issue_row(self, issue: dict, width: int, id_w: int) -> Text:
@@ -1781,6 +1823,11 @@ class LTUI(App):
         m.append(" ", style=C_DIM)
         assignee = (issue.get("assignee") or {}).get("displayName") or "unassigned"
         m.append(assignee, style=C_SUB)
+        project = issue.get("project")
+        if project:
+            m.append("   ")
+            m.append("\uf07b ", style=project.get("color") or C_DIM)
+            m.append(project["name"], style=C_SUB)
         labels = issue["labels"]["nodes"]
         if labels:
             m.append("\n")
@@ -1936,6 +1983,12 @@ class LTUI(App):
                 self.create_issue(team, result[0], result[1])
 
         self.push_screen(NewTicketModal(f" new ticket · {team['key']}"), done)
+
+    def action_toggle_group(self) -> None:
+        self._group_by = "project" if self._group_by == "status" else "status"
+        self._save_state()
+        self.render_issues()
+        self.notify(f"\uf0ca grouping by {self._group_by}")
 
     def action_toggle_mine(self) -> None:
         self._mine = not self._mine
@@ -2102,7 +2155,8 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
       linear-cli's config. no key? ltui asks on first launch.
 
 keys: enter open ticket   n new   s status   p priority   c comment
-      a assign   o browser   y yank   / filter   m mine only   t theme
+      a assign   o browser   y yank   / filter   m mine only   v group
+      t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 

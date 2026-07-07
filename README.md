@@ -45,6 +45,7 @@ launch. ltui doesn't:
 | --- | ----------------------------------------------------------------------------------- |
 | 🗂️  | **smart grouping** — `In Review` → `In Progress` → `Todo` → `Backlog` → `Done` — sorted by how close work is to shipping, freshest tickets first inside every group |
 | 👤  | **mine first** — your tickets float to the top of every group; press `m` to hide everyone else entirely |
+| 📁  | **project view** — `v` regroups the whole board by project (color-coded, status-ordered inside); the detail panel names each ticket's project |
 | 🌿  | **`y` yanks the git branch** — Linear's generated branch name straight to your clipboard (or the URL / identifier); ticket → `git checkout -b` in seconds |
 | 👥  | **assign without leaving** — `a` reassigns to anyone on the team, or you, or nobody |
 | 🌳  | **hierarchy aware** — the detail panel shows the parent ticket and all sub-issues with a done-count, next to blocked/blocking relations |
@@ -146,12 +147,23 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `y`      | **yank** — copy branch name / url / id        |
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
+| `v`      | group by **status / project**                 |
 | `t`      | cycle **theme**                               |
 | `,`      | open **settings**                             |
 | `r`      | refresh                                       |
 | `g` `G`  | jump to top / bottom                          |
 | `?`      | **help** — keybinding cheatsheet              |
 | `q`      | quit                                          |
+
+## project view
+
+`v` flips the board from status columns to **projects** — each project gets a
+color-coded section (freshest work first, status order inside), with tickets
+that belong to no project collected at the bottom. Press `v` again to go back.
+
+<div align="center">
+<img src="assets/projects.png" alt="group by project" width="80%">
+</div>
 
 ## the detail panel
 

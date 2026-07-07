@@ -113,8 +113,13 @@ CHILDREN = [
 ]
 
 
+P_SYNC = {"id": "p-sync", "name": "Sync Engine v2", "color": "#89b4fa"}
+P_POLISH = {"id": "p-polish", "name": "Q3 Polish", "color": "#cba6f7"}
+P_INFRA = {"id": "p-infra", "name": "Infra Hardening", "color": "#a6e3a1"}
+
+
 def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=None,
-          blocks=(), blocked_by=(), parent=None):
+          blocks=(), blocked_by=(), parent=None, project=None):
     return {
         "id": f"i-{num}",
         "identifier": f"CORE-{num}",
@@ -135,32 +140,33 @@ def issue(num, title, state, prio, assignee, labels, up_h, created_d=20, desc=No
             {"type": "blocks", "issue": {"identifier": b}} for b in blocked_by
         ]},
         "parent": parent,
+        "project": project,
     }
 
 
 ISSUES = [
     # in review
-    issue(128, "Split sync engine into per-entity pipelines", "st-ir", 1, NOVA, [L_INFRA], 3, desc=DESC, blocked_by=["CORE-134"], parent={"identifier": "CORE-100"}),
+    issue(128, "Split sync engine into per-entity pipelines", "st-ir", 1, NOVA, [L_INFRA], 3, desc=DESC, blocked_by=["CORE-134"], parent={"identifier": "CORE-100"}, project=P_SYNC),
     issue(131, "Rate-limit invite spam from unverified workspaces", "st-ir", 2, KAI, [L_BUG], 6, blocked_by=["CORE-130"]),
-    issue(119, "New onboarding checklist — empty states + confetti", "st-ir", 3, REI, [L_UX, L_FEAT], 11),
+    issue(119, "New onboarding checklist — empty states + confetti", "st-ir", 3, REI, [L_UX, L_FEAT], 11, project=P_POLISH),
     # in progress
-    issue(134, "Streaming exports: cursor pagination for 1M+ row tables", "st-ip", 1, NOVA, [L_FEAT], 1, blocks=["CORE-128"]),
+    issue(134, "Streaming exports: cursor pagination for 1M+ row tables", "st-ip", 1, NOVA, [L_FEAT], 1, blocks=["CORE-128"], project=P_SYNC),
     issue(133, "Fix flaky websocket reconnect on laptop sleep", "st-ip", 2, NOVA, [L_BUG], 4),
-    issue(127, "Migrate search to the new tokenizer", "st-ip", 2, KAI, [L_INFRA], 9),
-    issue(125, "Command palette: fuzzy match on ticket identifiers", "st-ip", 3, REI, [L_FEAT, L_UX], 14),
+    issue(127, "Migrate search to the new tokenizer", "st-ip", 2, KAI, [L_INFRA], 9, project=P_SYNC),
+    issue(125, "Command palette: fuzzy match on ticket identifiers", "st-ip", 3, REI, [L_FEAT, L_UX], 14, project=P_POLISH),
     issue(122, "Audit log retention policy + admin UI", "st-ip", 4, KAI, [L_FEAT], 26),
     # todo
-    issue(136, "Zero-downtime schema migration runbook", "st-td", 2, NOVA, [L_INFRA], 5),
-    issue(135, "Keyboard shortcut cheatsheet overlay", "st-td", 3, REI, [L_UX], 8),
+    issue(136, "Zero-downtime schema migration runbook", "st-td", 2, NOVA, [L_INFRA], 5, project=P_INFRA),
+    issue(135, "Keyboard shortcut cheatsheet overlay", "st-td", 3, REI, [L_UX], 8, project=P_POLISH),
     issue(130, "Dedupe webhook deliveries on retry storms", "st-td", 3, None, [L_BUG, L_INFRA], 30, blocks=["CORE-131"]),
-    issue(126, "Dark mode for public status page", "st-td", 4, None, [L_UX], 41),
+    issue(126, "Dark mode for public status page", "st-td", 4, None, [L_UX], 41, project=P_POLISH),
     # backlog
     issue(112, "Self-serve data residency picker (EU/US)", "st-bl", 0, None, [L_FEAT], 70),
-    issue(108, "Native ARM builds for the desktop app", "st-bl", 0, None, [L_INFRA], 90),
+    issue(108, "Native ARM builds for the desktop app", "st-bl", 0, None, [L_INFRA], 90, project=P_INFRA),
     issue(104, "Investigate CRDT sync for offline mode", "st-bl", 0, None, [L_FEAT], 120),
     # done
     issue(129, "Ship per-workspace API rate dashboards", "st-dn", 2, NOVA, [L_FEAT], 20),
-    issue(124, "Patch session fixation on OAuth callback", "st-dn", 1, KAI, [L_BUG], 32),
+    issue(124, "Patch session fixation on OAuth callback", "st-dn", 1, KAI, [L_BUG], 32, project=P_INFRA),
     issue(121, "Compress avatar uploads with AVIF", "st-dn", 3, REI, [L_UX], 50),
     # canceled
     issue(97, "Rewrite everything in a weekend", "st-cn", 0, None, [], 200),
@@ -277,6 +283,11 @@ async def welcome_shot(name, size=(148, 41)):
     print(f"  ✓ {name}.svg")
 
 
+async def open_projects(app, pilot):
+    await pilot.press("v")
+    await pilot.pause(0.3)
+
+
 async def open_themes(app, pilot):
     app.action_change_theme()
     await pilot.pause(0.3)
@@ -293,6 +304,7 @@ async def main():
     await shot("comment", size=(148, 41), drive=open_comment)
     await shot("settings", size=(148, 41), drive=open_settings)
     await shot("themes", size=(148, 41), drive=open_themes)
+    await shot("projects", size=(148, 41), drive=open_projects)
     await onboard_shot("onboard")
     await welcome_shot("welcome")
     await shot("theme-void", size=(148, 41), theme="void")
