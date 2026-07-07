@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 import json
 import sys
@@ -481,6 +481,7 @@ class Splitter(Static):
     """A 1-cell drag handle between panels; drag to resize, double-click to reset."""
 
     can_focus = False
+    ALLOW_SELECT = False  # a drag here resizes; it must not start text selection
 
     def __init__(
         self,
@@ -984,7 +985,7 @@ class LTUI(App):
 
     #main {{ padding: 0 1 0 0; }}
     #sidebar {{ width: 24; margin: 0 0 0 1; }}
-    #split-left, #split-right {{ width: 1; }}
+    #split-left, #split-right {{ width: 1; height: 1fr; }}
     #split-left:hover, #split-right:hover,
     #split-left.dragging, #split-right.dragging {{ background: $ltui-border; }}
     #split-right {{ display: none; }}
