@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 import json
 import sys
@@ -95,15 +95,15 @@ THEMES = [
     # blur/transparency it has) shows through
     Theme(
         name="clear",
-        primary=C_BLUE, secondary=C_MAUVE, accent="#f5c2e7",
+        primary="#8a93a5", secondary="#6f7787", accent="#a9b1c0",
         background="ansi_default", surface="ansi_default", panel="ansi_default",
         foreground=C_TEXT, **_ACCENTS,
         variables={
-            "ltui-border": "#45475a",
-            "ltui-border-focus": C_BLUE,
-            "ltui-border-detail": C_LAV,
-            "ltui-modal-bg": "#181825",
-            "ltui-cursor": "#2c3a5e",
+            "ltui-border": "#3c3f4a",
+            "ltui-border-focus": "#8a93a5",
+            "ltui-border-detail": "#a9b1c0",
+            "ltui-modal-bg": "#16161d",
+            "ltui-cursor": "#282c38",
             "ltui-overlay": "transparent",
         },
     ),
