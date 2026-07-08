@@ -9,7 +9,7 @@ WITHOUT ANY WARRANTY. See the LICENSE file.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import json
 import sys
@@ -33,6 +33,7 @@ from textual.widgets.option_list import Option
 from textual.worker import WorkerState
 
 SCTUI_CONFIG = Path.home() / ".config/sctui/config.toml"
+SCTUI_JSON_CONFIG = Path.home() / ".config/sctui/config.json"
 STATE_FILE = Path.home() / ".local/state/sctui/state.json"
 CACHE_DIR = Path.home() / ".cache/sctui"
 API_BASE = "https://api.app.shortcut.com"
@@ -310,6 +311,108 @@ def normalize_story(s: dict, state_map: dict, epic_map: dict,
     }
 
 
+def load_user_config() -> dict:
+    """~/.config/sctui/config.json — keybinds + options. Read once at startup."""
+    try:
+        return json.loads(SCTUI_JSON_CONFIG.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"sctui: ignoring invalid config.json ({e})", file=sys.stderr)
+        return {}
+
+
+USER_CONFIG = load_user_config()
+CONFIG_OPTIONS = USER_CONFIG.get("options", {}) if isinstance(USER_CONFIG, dict) else {}
+
+# action -> (default keys, footer label or None). every action here can be
+# remapped in config.json under "keybinds"; a value may be a key or a list.
+DEFAULT_KEYBINDS = {
+    "new_ticket": (["n"], "new"),
+    "change_status": (["s"], "status"),
+    "add_comment": (["c"], "comment"),
+    "filter": (["slash"], "filter"),
+    "toggle_mine": (["m"], "mine"),
+    "toggle_group": (["v"], "group"),
+    "pick_project": (["V"], None),
+    "cycle_theme": (["t"], "theme"),
+    "open_settings": (["comma"], None),
+    "help": (["question_mark"], "help"),
+    "quit": (["q"], "quit"),
+    "refresh": (["r"], None),
+    "change_priority": (["p"], None),  # story type in Shortcut terms
+    "edit_labels": (["l"], None),
+    "move_project": (["P"], None),
+    "change_assignee": (["a"], None),
+    "open_browser": (["o"], None),
+    "yank": (["y"], None),
+    # vim layer (additive)
+    "next_group": (["right_square_bracket"], None),
+    "prev_group": (["left_square_bracket"], None),
+    "command_palette": (["colon"], None),
+}
+
+
+def build_bindings(user_keybinds: dict | None = None) -> list:
+    """App bindings from defaults + config.json overrides. Fail-safe: a bad
+    config falls back to the defaults for the affected action."""
+    merged: dict[str, tuple[list, str | None]] = {}
+    user_keybinds = user_keybinds if user_keybinds is not None else (
+        USER_CONFIG.get("keybinds", {}) if isinstance(USER_CONFIG, dict) else {}
+    )
+    for action, (keys, label) in DEFAULT_KEYBINDS.items():
+        custom = user_keybinds.get(action)
+        if isinstance(custom, str):
+            keys = [custom]
+        elif isinstance(custom, list) and all(isinstance(k, str) for k in custom) and custom:
+            keys = custom
+        merged[action] = (keys, label)
+    bindings = [Binding("escape", "back", show=False)]
+    for action, (keys, label) in merged.items():
+        for i, key in enumerate(keys):
+            bindings.append(
+                Binding(
+                    key,
+                    action,
+                    label or "",
+                    show=bool(label) and i == 0,
+                )
+            )
+    return bindings
+
+
+CONFIG_TEMPLATE = """{
+  "keybinds": {
+    "new_ticket": "n",
+    "change_status": "s",
+    "add_comment": "c",
+    "filter": "slash",
+    "toggle_mine": "m",
+    "toggle_group": "v",
+    "pick_project": "V",
+    "cycle_theme": "t",
+    "open_settings": "comma",
+    "help": "question_mark",
+    "quit": "q",
+    "refresh": "r",
+    "change_priority": "p",
+    "edit_labels": "l",
+    "move_project": "P",
+    "change_assignee": "a",
+    "open_browser": "o",
+    "yank": "y",
+    "next_group": "right_square_bracket",
+    "prev_group": "left_square_bracket",
+    "command_palette": "colon"
+  },
+  "options": {
+    "auto_refresh_seconds": 180,
+    "animations": true
+  }
+}
+"""
+
+
 def load_token() -> str:
     import os
 
@@ -467,6 +570,8 @@ def pop_in(widget, duration: float = 0.15) -> None:
     (offset/slide animation isn't supported for ScalarOffset in textual 8.x,
     so this is opacity-only — still reads as motion at 150ms.)
     """
+    if not CONFIG_OPTIONS.get("animations", True):
+        return
     widget.styles.opacity = 0.0
     widget.styles.animate("opacity", 1.0, duration=duration, easing="out_cubic")
 
@@ -495,7 +600,36 @@ class NavList(OptionList):
         Binding("k", "cursor_up", show=False),
         Binding("g", "first", show=False),
         Binding("G", "last", show=False),
+        Binding("ctrl+d", "page_down", show=False),
+        Binding("ctrl+u", "page_up", show=False),
+        Binding("ctrl+f", "page_down", show=False),
+        Binding("ctrl+b", "page_up", show=False),
     ]
+
+    def _snap_to_enabled(self, direction: int) -> None:
+        """Page motions can land on a disabled header; nudge to a real row."""
+        if not self.option_count:
+            return
+        i = self.highlighted
+        if i is None:
+            i = 0 if direction > 0 else self.option_count - 1
+        elif not self.get_option_at_index(i).disabled:
+            return
+        order = range(i, self.option_count) if direction > 0 else range(i, -1, -1)
+        fallback = range(i, -1, -1) if direction > 0 else range(i, self.option_count)
+        for scan in (order, fallback):
+            for j in scan:
+                if not self.get_option_at_index(j).disabled:
+                    self.highlighted = j
+                    return
+
+    def action_page_down(self) -> None:
+        super().action_page_down()
+        self._snap_to_enabled(1)
+
+    def action_page_up(self) -> None:
+        super().action_page_up()
+        self._snap_to_enabled(-1)
 
     def on_resize(self, event) -> None:
         if self.id == "issues":
@@ -509,6 +643,10 @@ class DetailScroll(VerticalScroll):
     BINDINGS = [
         Binding("j", "scroll_down", show=False),
         Binding("k", "scroll_up", show=False),
+        Binding("ctrl+d", "page_down", show=False),
+        Binding("ctrl+u", "page_up", show=False),
+        Binding("ctrl+f", "page_down", show=False),
+        Binding("ctrl+b", "page_up", show=False),
     ]
 
 
@@ -814,6 +952,107 @@ class ThemeModal(ModalScreen):
         self.dismiss(False)
 
 
+class LabelsModal(ModalScreen):
+    """Multi-select label editor: enter toggles, ctrl+s applies."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("ctrl+s", "apply", show=False),
+    ]
+
+    def __init__(self, title: str, labels: list[dict], selected: set[str]) -> None:
+        super().__init__()
+        self._title = title
+        self._labels = labels
+        self._sel = set(selected)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="labels-box"):
+            yield Static(self._title, id="labels-title")
+            yield NavList(id="labels-list")
+            with Horizontal(id="labels-actions"):
+                yield Static(
+                    f"[{C_DIM}]enter toggles · ctrl+s applies · esc cancels[/]",
+                    id="labels-hint",
+                )
+                yield Button("cancel", id="labels-cancel")
+                yield Button("\uf00c apply", variant="primary", id="labels-apply")
+
+    def on_mount(self) -> None:
+        pop_in(self.query_one("#labels-box"))
+        self._build()
+        self.query_one("#labels-list").focus()
+
+    def _build(self) -> None:
+        ol = self.query_one("#labels-list", NavList)
+        prev = ol.highlighted
+        ol.clear_options()
+        opts = []
+        for lb in self._labels:
+            row = Text(no_wrap=True, overflow="ellipsis")
+            on_it = lb["id"] in self._sel
+            row.append("\uf00c " if on_it else "  ", style=C_GREEN)
+            if not on_it:
+                row.append(" ")
+            row.append("● ", style=lb.get("color") or C_DIM)
+            row.append(lb["name"], style=C_TEXT if on_it else C_SUB)
+            opts.append(Option(row, id=lb["id"]))
+        ol.add_options(opts)
+        ol.highlighted = prev if prev is not None else 0
+
+    @on(OptionList.OptionSelected, "#labels-list")
+    def _toggle(self, event: OptionList.OptionSelected) -> None:
+        lid = event.option.id
+        if lid in self._sel:
+            self._sel.discard(lid)
+        else:
+            self._sel.add(lid)
+        self._build()
+
+    @on(Button.Pressed, "#labels-apply")
+    def _apply_btn(self) -> None:
+        self.action_apply()
+
+    @on(Button.Pressed, "#labels-cancel")
+    def _cancel_btn(self) -> None:
+        self.dismiss(None)
+
+    def action_apply(self) -> None:
+        self.dismiss(sorted(self._sel))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ProjectNameModal(ModalScreen):
+    """One-field prompt for a new epic name."""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="projname-box"):
+            yield Static(
+                f"[bold {C_SUB}]\uf07b new epic[/]", id="projname-title"
+            )
+            yield Input(placeholder="epic name", id="projname-input")
+            yield Static(
+                f"[{C_DIM}]enter creates · esc cancels[/]", id="projname-hint"
+            )
+
+    def on_mount(self) -> None:
+        pop_in(self.query_one("#projname-box"))
+        self.query_one("#projname-input").focus()
+
+    @on(Input.Submitted, "#projname-input")
+    def _submit(self) -> None:
+        name = self.query_one("#projname-input", Input).value.strip()
+        if name:
+            self.dismiss(name)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class SettingsModal(ModalScreen):
     BINDINGS = [Binding("escape", "close_modal", show=False)]
 
@@ -886,6 +1125,9 @@ class HelpModal(ModalScreen):
 
     SECTIONS = [
         ("navigate", [
+            ("ctrl+d / ctrl+u", "half page down / up"),
+            ("[ / ]", "previous / next group"),
+            (":", "command palette"),
             ("j/k ↑↓", "move around lists and the detail panel"),
             ("g / G", "jump to top / bottom"),
             ("enter", "open ticket detail (click works too)"),
@@ -895,6 +1137,8 @@ class HelpModal(ModalScreen):
             ("n", "new ticket in the current team"),
             ("s", "change status"),
             ("p", "change story type (bug/feature/chore)"),
+            ("l", "edit labels"),
+            ("P", "move to an epic (or create one)"),
             ("a", "change assignee (or unassign)"),
             ("c", "add a comment (ctrl+s to send)"),
             ("y", "yank — copy branch / url / identifier"),
@@ -1007,25 +1251,7 @@ def hint_markup() -> str:
 class SCTUI(App):
     TITLE = "sctui"
 
-    BINDINGS = [
-        Binding("n", "new_ticket", "new"),
-        Binding("s", "change_status", "status"),
-        Binding("c", "add_comment", "comment"),
-        Binding("slash", "filter", "filter"),
-        Binding("m", "toggle_mine", "mine"),
-        Binding("v", "toggle_group", "group"),
-        Binding("V", "pick_project", show=False),
-        Binding("t", "cycle_theme", "theme"),
-        Binding("comma", "open_settings", show=False),
-        Binding("question_mark", "help", "help"),
-        Binding("q", "quit", "quit"),
-        Binding("r", "refresh", show=False),
-        Binding("p", "change_priority", show=False),
-        Binding("a", "change_assignee", show=False),
-        Binding("o", "open_browser", show=False),
-        Binding("y", "yank", show=False),
-        Binding("escape", "back", show=False),
-    ]
+    BINDINGS = build_bindings()
 
     CSS = f"""
     #appheader {{ height: 1; padding: 0 2; }}
@@ -1108,6 +1334,27 @@ class SCTUI(App):
     #picker-list {{ height: auto; max-height: 14; }}
 
     CommentModal {{ align: center middle; background: $sctui-overlay; }}
+    LabelsModal {{ align: center middle; background: $sctui-overlay; }}
+    #labels-box {{
+        width: 46; height: auto; max-height: 80%;
+        background: $sctui-modal-bg; border: round $sctui-border-focus; padding: 1 1;
+    }}
+    #labels-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
+    #labels-list {{ height: auto; max-height: 14; }}
+    #labels-actions {{ height: 3; margin: 1 0 0 0; }}
+    #labels-hint {{ width: 1fr; padding: 1 1; }}
+    #labels-actions Button {{ margin: 0 0 0 1; min-width: 9; }}
+
+    ProjectNameModal {{ align: center middle; background: $sctui-overlay; }}
+    #projname-box {{
+        width: 52; height: auto;
+        background: $sctui-modal-bg; border: round $sctui-border-focus; padding: 1 2;
+    }}
+    #projname-title {{ padding: 0 0 1 0; }}
+    #projname-input {{ border: round {C_VFAINT}; background: transparent; }}
+    #projname-input:focus {{ border: round {C_FAINT}; }}
+    #projname-hint {{ padding: 1 0 0 0; }}
+
     #comment-box {{
         width: 72; height: 20;
         background: $sctui-modal-bg; border: round $sctui-border-focus; padding: 1 2;
@@ -1192,6 +1439,8 @@ class SCTUI(App):
         self._issues: list[dict] = []
         self._states: list[dict] = []
         self._members: dict[str, list] = {}
+        self._workspace_labels: list | None = None  # workspace-level in Shortcut
+        self._workspace_epics: list | None = None
         self._team: dict | None = None
         self._viewer_id: str | None = None
         self._viewer_name: str | None = None
@@ -1325,7 +1574,9 @@ class SCTUI(App):
             self.query_one("#teams", NavList).highlighted = self._teams.index(team)
             self.load_team(team)
         self.boot(pick_team=team is None)
-        self.set_interval(AUTO_REFRESH_SECONDS, self._auto_refresh_board)
+        refresh_s = CONFIG_OPTIONS.get("auto_refresh_seconds", AUTO_REFRESH_SECONDS)
+        if isinstance(refresh_s, (int, float)) and refresh_s > 0:
+            self.set_interval(refresh_s, self._auto_refresh_board)
         # one-time tour; _start may run inside OnboardModal's dismiss callback
         # (screen still popping), so defer the push a tick
         if not load_state().get("welcomed"):
@@ -1899,12 +2150,14 @@ class SCTUI(App):
         id_w = max((len(i["identifier"]) for i in issues), default=6)
         ol.clear_options()
         self._opt_index = {}
+        self._header_indices = []
         opts: list[Option] = []
         first = True
         for header, group in groups:
             if not first:
                 opts.append(Option(Text(" "), disabled=True))
             first = False
+            self._header_indices.append(len(opts))
             opts.append(Option(header, disabled=True))
             for i in group:
                 self._opt_index[i["id"]] = len(opts)
@@ -1914,6 +2167,8 @@ class SCTUI(App):
             opts.append(Option(Text(f"  {msg}", style=C_DIM), disabled=True))
         ol.add_options(opts)
 
+        # a group's first issue sits right after its header row
+        self._group_starts = [h + 1 for h in self._header_indices]
         mine_tag = " \uf007 mine \u00b7" if self._mine else ""
         proj_tag = ""
         if self._project_filter is not None:
@@ -2113,6 +2368,8 @@ class SCTUI(App):
             self.load_team(self._team)
 
     def _tick_fx(self) -> None:
+        if not CONFIG_OPTIONS.get("animations", True):
+            return
         try:
             self.query_one("#profile")
         except Exception:
@@ -2233,6 +2490,26 @@ class SCTUI(App):
 
         self.push_screen(PickerModal("filter by epic", opts), done)
 
+    def action_next_group(self) -> None:
+        self._jump_group(forward=True)
+
+    def action_prev_group(self) -> None:
+        self._jump_group(forward=False)
+
+    def _jump_group(self, forward: bool) -> None:
+        ol = self.query_one("#issues", NavList)
+        starts = getattr(self, "_group_starts", [])
+        if not starts:
+            return
+        cur = ol.highlighted if ol.highlighted is not None else -1
+        if forward:
+            target = next((s for s in starts if s > cur), starts[0])
+        else:
+            prev = [s for s in starts if s < cur]
+            target = prev[-1] if prev else starts[-1]
+        ol.highlighted = target
+        ol.focus()
+
     def action_toggle_group(self) -> None:
         self._group_by = "project" if self._group_by == "status" else "status"
         self._save_state()
@@ -2263,6 +2540,192 @@ class SCTUI(App):
         if not issue:
             return
         self.pick_transition(issue)
+
+    def action_edit_labels(self) -> None:
+        issue = self._current_issue()
+        if not issue:
+            return
+        self.open_labels(issue)
+
+    @work(exclusive=True, group="members")
+    async def open_labels(self, issue: dict) -> None:
+        labels = self._workspace_labels
+        if labels is None:
+            try:
+                raw = await self.api("GET", "/api/v3/labels") or []
+            except Exception as e:
+                self.notify(f"shortcut: {e}", severity="error")
+                return
+            labels = [
+                {
+                    "id": str(l.get("id", "")),
+                    "name": l.get("name", "?"),
+                    "color": l.get("color") or label_color(l.get("name", "?")),
+                }
+                for l in raw
+                if not l.get("archived")
+            ]
+            self._workspace_labels = labels
+        # stories carry label names (ids may be absent in normalized dicts) —
+        # match by NAME: option ids are the names, selection is a name set
+        options = [
+            {"id": lb["name"], "name": lb["name"], "color": lb["color"]}
+            for lb in labels
+        ]
+        known = {o["id"] for o in options}
+        for lb in issue["labels"]["nodes"]:
+            if lb["name"] not in known:
+                options.append({
+                    "id": lb["name"],
+                    "name": lb["name"],
+                    "color": lb.get("color") or label_color(lb["name"]),
+                })
+        if not options:
+            self.notify("this workspace has no labels yet", severity="warning")
+            return
+        current = {lb["name"] for lb in issue["labels"]["nodes"]}
+
+        def done(names: list | None) -> None:
+            if names is not None and set(names) != current:
+                self.apply_labels(issue, names)
+
+        self.push_screen(
+            LabelsModal(f"\uf02b labels · {issue['identifier']}", options, current),
+            done,
+        )
+
+    @work(group="mutate")
+    async def apply_labels(self, issue: dict, names: list) -> None:
+        try:
+            await self.api(
+                "PUT",
+                f"/api/v3/stories/{issue['id']}",
+                json={"labels": [{"name": n} for n in names]},
+            )
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        color_of = {
+            lb["name"]: lb["color"] for lb in self._workspace_labels or []
+        }
+        issue["labels"] = {"nodes": [
+            {"name": n, "color": color_of.get(n) or label_color(n)} for n in names
+        ]}
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self._update_detail_meta(issue)
+        self.notify(f"\uf02b {issue['identifier']} · labels updated")
+
+    def action_move_project(self) -> None:
+        issue = self._current_issue()
+        if not issue:
+            return
+        self.open_project_picker(issue)
+
+    @work(exclusive=True, group="members")
+    async def open_project_picker(self, issue: dict) -> None:
+        epics = self._workspace_epics
+        if epics is None:
+            try:
+                raw = await self.api("GET", "/api/v3/epics") or []
+            except Exception as e:
+                self.notify(f"shortcut: {e}", severity="error")
+                return
+            epics = [
+                {
+                    "id": str(ep["id"]),
+                    "name": ep.get("name") or f"epic {ep['id']}",
+                    "color": label_color(ep.get("name") or f"epic {ep['id']}"),
+                }
+                for ep in raw
+                if not ep.get("archived")
+            ]
+            self._workspace_epics = epics
+        current = (issue.get("project") or {}).get("id")
+        opts = []
+        row = Text()
+        row.append("\uf067 ", style=C_GREEN)
+        row.append("new epic…", style=C_TEXT)
+        opts.append(Option(row, id="new:"))
+        row = Text()
+        row.append("○ ", style=C_DIM)
+        row.append("no epic", style=C_SUB)
+        if current is None:
+            row.append("  \uf00c", style=C_GREEN)
+        opts.append(Option(row, id="none:"))
+        for p in epics:
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append("\uf07b ", style=p.get("color") or C_DIM)
+            row.append(p["name"], style=C_TEXT)
+            if p["id"] == current:
+                row.append("  \uf00c", style=C_GREEN)
+            opts.append(Option(row, id=f"proj:{p['id']}"))
+
+        def done(choice: str | None) -> None:
+            if choice is None:
+                return
+            if choice == "new:":
+                def named(name: str | None) -> None:
+                    if name:
+                        self.create_project_and_assign(issue, name)
+                self.push_screen(ProjectNameModal(), named)
+            elif choice == "none:":
+                if current is not None:
+                    self.apply_project(issue, None)
+            else:
+                pid = choice.removeprefix("proj:")
+                if pid != current:
+                    self.apply_project(issue, pid)
+
+        self.push_screen(
+            PickerModal(f"move {issue['identifier']} to…", opts), done
+        )
+
+    @work(group="mutate")
+    async def create_project_and_assign(self, issue: dict, name: str) -> None:
+        try:
+            created = await self.api("POST", "/api/v3/epics", json={"name": name})
+            epic = {
+                "id": str(created["id"]),
+                "name": created.get("name") or name,
+                "color": label_color(created.get("name") or name),
+            }
+        except Exception as e:
+            self.notify(f"create epic failed: {e}", severity="error")
+            return
+        if self._workspace_epics is not None:
+            self._workspace_epics.append(epic)
+        self.notify(f"\uf07b created epic {epic['name']}")
+        self.apply_project(issue, epic["id"])
+
+    @work(group="mutate")
+    async def apply_project(self, issue: dict, epic_id: str | None) -> None:
+        try:
+            await self.api(
+                "PUT",
+                f"/api/v3/stories/{issue['id']}",
+                json={"epic_id": int(epic_id) if epic_id is not None else None},
+            )
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        if epic_id is None:
+            issue["project"] = None
+        else:
+            name = next(
+                (p["name"] for p in self._workspace_epics or [] if p["id"] == epic_id),
+                f"epic {epic_id}",
+            )
+            issue["project"] = {
+                "id": epic_id, "name": name, "color": label_color(name)
+            }
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self._update_detail_meta(issue)
+        pname = (issue.get("project") or {}).get("name") or "no epic"
+        self.notify(f"\uf07b {issue['identifier']} → {pname}")
 
     def action_change_priority(self) -> None:
         issue = self._current_issue()
@@ -2394,16 +2857,24 @@ class SCTUI(App):
 
 HELP = """sctui - a fast, clean TUI for Shortcut   https://github.com/Gheat1/sctui
 
-usage: sctui [--version] [--help]
+usage: sctui [--version] [--help] [--init-config]
+
+config: ~/.config/sctui/config.json remaps any keybind and sets options
+        (auto_refresh_seconds, animations). sctui --init-config writes a
+        starter file. changes apply on restart.
 
 auth: SHORTCUT_API_TOKEN env var, or ~/.config/sctui/config.toml.
       nothing set? sctui asks on first launch.
 
 keys: enter open ticket   n new   s status   p type   c comment
-      a assign   o browser   y yank   / filter   m mine only   v group
+      a assign   l labels   P epic   o browser   y yank   / filter
+      m mine only   v group
       V one epic   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
+
+vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
+      [ / ] previous / next group   : command palette
 
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""
@@ -2415,6 +2886,14 @@ def main() -> None:
         return
     if "--help" in sys.argv or "-h" in sys.argv:
         print(f"sctui {__version__}\n{HELP}")
+        return
+    if "--init-config" in sys.argv:
+        if SCTUI_JSON_CONFIG.exists():
+            print(f"config already exists: {SCTUI_JSON_CONFIG}")
+            return
+        SCTUI_JSON_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        SCTUI_JSON_CONFIG.write_text(CONFIG_TEMPLATE)
+        print(f"wrote {SCTUI_JSON_CONFIG} — remap keys, tweak options, restart sctui")
         return
     SCTUI().run()
 

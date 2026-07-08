@@ -190,6 +190,21 @@ class DemoApp(SCTUI):
             ]}]
         if path.endswith("/v3/members"):
             return [{"id": u["id"], "profile": {"name": u["displayName"], "mention_name": u["displayName"]}} for u in (NOVA, KAI, REI)]
+        if path.endswith("/v3/labels"):
+            return [
+                {"id": 11, "name": "bug", "color": "#f38ba8", "archived": False},
+                {"id": 12, "name": "feature", "color": "#89b4fa", "archived": False},
+                {"id": 13, "name": "infra", "color": "#a6e3a1", "archived": False},
+                {"id": 14, "name": "design", "color": "#cba6f7", "archived": False},
+            ]
+        if path.endswith("/v3/epics") and method == "POST":
+            return {"id": 99, "name": (kwargs.get("json") or {}).get("name") or "epic"}
+        if path.endswith("/v3/epics"):
+            return [
+                {"id": 1, "name": P_SYNC["name"], "archived": False},
+                {"id": 2, "name": P_POLISH["name"], "archived": False},
+                {"id": 3, "name": P_INFRA["name"], "archived": False},
+            ]
         if "/stories/" in path and path.endswith("/comments"):
             return {}
         if "/stories/" in path and method == "GET":
@@ -197,6 +212,10 @@ class DemoApp(SCTUI):
                 {"id": 1, "text": c["body"], "created_at": c["createdAt"], "author_id": "u-" + c["user"]["displayName"]}
                 for c in COMMENTS
             ]}
+        if "/stories/" in path and method == "PUT" and (
+            "labels" in (kwargs.get("json") or {}) or "epic_id" in (kwargs.get("json") or {})
+        ):
+            return {}
         return {}
 
     async def fetch_issues(self, project_key):
