@@ -62,6 +62,7 @@ launch. ltui doesn't:
 | 🌚  | **five themes** — `mocha`, pure-black `void`, monochrome `onyx`, `clear` (no background — your terminal's transparency/blur shows through), and `system` (drawn in your terminal's own ANSI palette: your kitty theme *is* the ltui theme) — cycle with `t` |
 | ⚙️  | **profile & settings** — who you are bottom-left, `,` opens a settings panel with live theme preview, preferences, and cache controls |
 | 🧠  | **remembers everything** — last team, theme, filters persist across sessions |
+| 🎛️  | **fully remappable** — every key rebindable via `~/.config/ltui/config.json` (`ltui --init-config`), with a vim motion layer (`ctrl+d/u`, `[`/`]` group jumps, `:` palette) out of the box |
 | 🔌  | **zero config** — reuses your [linear-cli](https://github.com/Finesssee/linear-cli) API key, or set `LINEAR_API_KEY` |
 
 ## install
@@ -160,6 +161,9 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `,`      | open **settings**                             |
 | `r`      | refresh                                       |
 | `g` `G`  | jump to top / bottom                          |
+| `ctrl+d/u` `ctrl+f/b` | half page / full page             |
+| `[` `]`  | previous / next **group**                     |
+| `:`      | command palette                               |
 | `?`      | **help** — keybinding cheatsheet              |
 | `q`      | quit                                          |
 
@@ -173,6 +177,31 @@ or `V` to zoom into a **single project** (works in either grouping).
 <div align="center">
 <img src="assets/projects.png" alt="group by project" width="80%">
 </div>
+
+## make it yours
+
+every keybind is remappable, vim-style motions included:
+
+```sh
+ltui --init-config    # writes ~/.config/ltui/config.json
+```
+
+```jsonc
+{
+  "keybinds": {
+    "new_ticket": "n",            // any action -> any key
+    "yank": ["y", "ctrl+y"]       // or several keys
+  },
+  "options": {
+    "auto_refresh_seconds": 180,  // 0 disables background sync
+    "animations": true            // false = no fades, no name wave
+  }
+}
+```
+
+key names are [Textual key names](https://textual.textualize.io/guide/input/#key)
+(`slash`, `comma`, `question_mark`, `ctrl+x`, …). unknown or invalid entries
+fall back to the defaults; changes apply on restart.
 
 ## the detail panel
 

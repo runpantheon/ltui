@@ -9,7 +9,7 @@ WITHOUT ANY WARRANTY. See the LICENSE file.
 
 from __future__ import annotations
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 import json
 import sys
@@ -35,6 +35,7 @@ from textual.worker import WorkerState
 API_URL = "https://api.linear.app/graphql"
 CONFIG = Path.home() / ".config/linear-cli/config.toml"
 LTUI_CONFIG = Path.home() / ".config/ltui/config.toml"
+LTUI_JSON_CONFIG = Path.home() / ".config/ltui/config.json"
 STATE_FILE = Path.home() / ".local/state/ltui/state.json"
 CACHE_DIR = Path.home() / ".cache/ltui"
 AUTO_REFRESH_SECONDS = 180
@@ -314,6 +315,108 @@ mutation($id: String!, $body: String!) {
 }"""
 
 
+def load_user_config() -> dict:
+    """~/.config/ltui/config.json — keybinds + options. Read once at startup."""
+    try:
+        return json.loads(LTUI_JSON_CONFIG.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"ltui: ignoring invalid config.json ({e})", file=sys.stderr)
+        return {}
+
+
+USER_CONFIG = load_user_config()
+CONFIG_OPTIONS = USER_CONFIG.get("options", {}) if isinstance(USER_CONFIG, dict) else {}
+
+# action -> (default keys, footer label or None). every action here can be
+# remapped in config.json under "keybinds"; a value may be a key or a list.
+DEFAULT_KEYBINDS = {
+    "new_ticket": (["n"], "new"),
+    "change_status": (["s"], "status"),
+    "add_comment": (["c"], "comment"),
+    "filter": (["slash"], "filter"),
+    "toggle_mine": (["m"], "mine"),
+    "toggle_group": (["v"], "group"),
+    "pick_project": (["V"], None),
+    "cycle_theme": (["t"], "theme"),
+    "open_settings": (["comma"], None),
+    "help": (["question_mark"], "help"),
+    "quit": (["q"], "quit"),
+    "refresh": (["r"], None),
+    "change_priority": (["p"], None),
+    "edit_labels": (["l"], None),
+    "move_project": (["P"], None),
+    "change_assignee": (["a"], None),
+    "open_browser": (["o"], None),
+    "yank": (["y"], None),
+    # vim layer (additive)
+    "next_group": (["right_square_bracket"], None),
+    "prev_group": (["left_square_bracket"], None),
+    "command_palette": (["colon"], None),
+}
+
+
+def build_bindings(user_keybinds: dict | None = None) -> list:
+    """App bindings from defaults + config.json overrides. Fail-safe: a bad
+    config falls back to the defaults for the affected action."""
+    merged: dict[str, tuple[list, str | None]] = {}
+    user_keybinds = user_keybinds if user_keybinds is not None else (
+        USER_CONFIG.get("keybinds", {}) if isinstance(USER_CONFIG, dict) else {}
+    )
+    for action, (keys, label) in DEFAULT_KEYBINDS.items():
+        custom = user_keybinds.get(action)
+        if isinstance(custom, str):
+            keys = [custom]
+        elif isinstance(custom, list) and all(isinstance(k, str) for k in custom) and custom:
+            keys = custom
+        merged[action] = (keys, label)
+    bindings = [Binding("escape", "back", show=False)]
+    for action, (keys, label) in merged.items():
+        for i, key in enumerate(keys):
+            bindings.append(
+                Binding(
+                    key,
+                    action,
+                    label or "",
+                    show=bool(label) and i == 0,
+                )
+            )
+    return bindings
+
+
+CONFIG_TEMPLATE = """{
+  "keybinds": {
+    "new_ticket": "n",
+    "change_status": "s",
+    "add_comment": "c",
+    "filter": "slash",
+    "toggle_mine": "m",
+    "toggle_group": "v",
+    "pick_project": "V",
+    "cycle_theme": "t",
+    "open_settings": "comma",
+    "help": "question_mark",
+    "quit": "q",
+    "refresh": "r",
+    "change_priority": "p",
+    "edit_labels": "l",
+    "move_project": "P",
+    "change_assignee": "a",
+    "open_browser": "o",
+    "yank": "y",
+    "next_group": "right_square_bracket",
+    "prev_group": "left_square_bracket",
+    "command_palette": "colon"
+  },
+  "options": {
+    "auto_refresh_seconds": 180,
+    "animations": true
+  }
+}
+"""
+
+
 def load_api_key() -> str:
     import os
 
@@ -482,6 +585,8 @@ def pop_in(widget, duration: float = 0.15) -> None:
     (offset/slide animation isn't supported for ScalarOffset in textual 8.x,
     so this is opacity-only — still reads as motion at 150ms.)
     """
+    if not CONFIG_OPTIONS.get("animations", True):
+        return
     widget.styles.opacity = 0.0
     widget.styles.animate("opacity", 1.0, duration=duration, easing="out_cubic")
 
@@ -510,7 +615,36 @@ class NavList(OptionList):
         Binding("k", "cursor_up", show=False),
         Binding("g", "first", show=False),
         Binding("G", "last", show=False),
+        Binding("ctrl+d", "page_down", show=False),
+        Binding("ctrl+u", "page_up", show=False),
+        Binding("ctrl+f", "page_down", show=False),
+        Binding("ctrl+b", "page_up", show=False),
     ]
+
+    def _snap_to_enabled(self, direction: int) -> None:
+        """Page motions can land on a disabled header; nudge to a real row."""
+        if not self.option_count:
+            return
+        i = self.highlighted
+        if i is None:
+            i = 0 if direction > 0 else self.option_count - 1
+        elif not self.get_option_at_index(i).disabled:
+            return
+        order = range(i, self.option_count) if direction > 0 else range(i, -1, -1)
+        fallback = range(i, -1, -1) if direction > 0 else range(i, self.option_count)
+        for scan in (order, fallback):
+            for j in scan:
+                if not self.get_option_at_index(j).disabled:
+                    self.highlighted = j
+                    return
+
+    def action_page_down(self) -> None:
+        super().action_page_down()
+        self._snap_to_enabled(1)
+
+    def action_page_up(self) -> None:
+        super().action_page_up()
+        self._snap_to_enabled(-1)
 
     def on_resize(self, event) -> None:
         if self.id == "issues":
@@ -524,6 +658,10 @@ class DetailScroll(VerticalScroll):
     BINDINGS = [
         Binding("j", "scroll_down", show=False),
         Binding("k", "scroll_up", show=False),
+        Binding("ctrl+d", "page_down", show=False),
+        Binding("ctrl+u", "page_up", show=False),
+        Binding("ctrl+f", "page_down", show=False),
+        Binding("ctrl+b", "page_up", show=False),
     ]
 
 
@@ -1002,6 +1140,9 @@ class HelpModal(ModalScreen):
 
     SECTIONS = [
         ("navigate", [
+            ("ctrl+d / ctrl+u", "half page down / up"),
+            ("[ / ]", "previous / next group"),
+            (":", "command palette"),
             ("j/k ↑↓", "move around lists and the detail panel"),
             ("g / G", "jump to top / bottom"),
             ("enter", "open ticket detail (click works too)"),
@@ -1125,27 +1266,7 @@ def hint_markup() -> str:
 class LTUI(App):
     TITLE = "ltui"
 
-    BINDINGS = [
-        Binding("n", "new_ticket", "new"),
-        Binding("s", "change_status", "status"),
-        Binding("c", "add_comment", "comment"),
-        Binding("slash", "filter", "filter"),
-        Binding("m", "toggle_mine", "mine"),
-        Binding("v", "toggle_group", "group"),
-        Binding("V", "pick_project", show=False),
-        Binding("t", "cycle_theme", "theme"),
-        Binding("comma", "open_settings", show=False),
-        Binding("question_mark", "help", "help"),
-        Binding("q", "quit", "quit"),
-        Binding("r", "refresh", show=False),
-        Binding("p", "change_priority", show=False),
-        Binding("l", "edit_labels", show=False),
-        Binding("P", "move_project", show=False),
-        Binding("a", "change_assignee", show=False),
-        Binding("o", "open_browser", show=False),
-        Binding("y", "yank", show=False),
-        Binding("escape", "back", show=False),
-    ]
+    BINDINGS = build_bindings()
 
     CSS = f"""
     #appheader {{ height: 1; padding: 0 2; }}
@@ -1467,7 +1588,9 @@ class LTUI(App):
             self.query_one("#teams", NavList).highlighted = self._teams.index(team)
             self.load_team(team)
         self.boot(pick_team=team is None)
-        self.set_interval(AUTO_REFRESH_SECONDS, self._auto_refresh_board)
+        refresh_s = CONFIG_OPTIONS.get("auto_refresh_seconds", AUTO_REFRESH_SECONDS)
+        if isinstance(refresh_s, (int, float)) and refresh_s > 0:
+            self.set_interval(refresh_s, self._auto_refresh_board)
         # one-time tour; _start may run inside OnboardModal's dismiss callback
         # (screen still popping), so defer the push a tick
         if not load_state().get("welcomed"):
@@ -1875,12 +1998,14 @@ class LTUI(App):
         id_w = max((len(i["identifier"]) for i in issues), default=6)
         ol.clear_options()
         self._opt_index = {}
+        self._header_indices = []
         opts: list[Option] = []
         first = True
         for header, group in groups:
             if not first:
                 opts.append(Option(Text(" "), disabled=True))
             first = False
+            self._header_indices.append(len(opts))
             opts.append(Option(header, disabled=True))
             for i in group:
                 self._opt_index[i["id"]] = len(opts)
@@ -1890,6 +2015,8 @@ class LTUI(App):
             opts.append(Option(Text(f"  {msg}", style=C_DIM), disabled=True))
         ol.add_options(opts)
 
+        # a group's first issue sits right after its header row
+        self._group_starts = [h + 1 for h in self._header_indices]
         mine_tag = " \uf007 mine \u00b7" if self._mine else ""
         proj_tag = ""
         if self._project_filter is not None:
@@ -2089,6 +2216,8 @@ class LTUI(App):
             self.load_team(self._team)
 
     def _tick_fx(self) -> None:
+        if not CONFIG_OPTIONS.get("animations", True):
+            return
         try:
             self.query_one("#profile")
         except Exception:
@@ -2208,6 +2337,26 @@ class LTUI(App):
             self.render_issues()
 
         self.push_screen(PickerModal("filter by project", opts), done)
+
+    def action_next_group(self) -> None:
+        self._jump_group(forward=True)
+
+    def action_prev_group(self) -> None:
+        self._jump_group(forward=False)
+
+    def _jump_group(self, forward: bool) -> None:
+        ol = self.query_one("#issues", NavList)
+        starts = getattr(self, "_group_starts", [])
+        if not starts:
+            return
+        cur = ol.highlighted if ol.highlighted is not None else -1
+        if forward:
+            target = next((s for s in starts if s > cur), starts[0])
+        else:
+            prev = [s for s in starts if s < cur]
+            target = prev[-1] if prev else starts[-1]
+        ol.highlighted = target
+        ol.focus()
 
     def action_toggle_group(self) -> None:
         self._group_by = "project" if self._group_by == "status" else "status"
@@ -2518,7 +2667,11 @@ class LTUI(App):
 
 HELP = """ltui - a fast, clean TUI for Linear   https://github.com/Gheat1/ltui
 
-usage: ltui [--version] [--help]
+usage: ltui [--version] [--help] [--init-config]
+
+config: ~/.config/ltui/config.json remaps any keybind and sets options
+        (auto_refresh_seconds, animations). ltui --init-config writes a
+        starter file. changes apply on restart.
 
 auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
       linear-cli's config. no key? ltui asks on first launch.
@@ -2530,6 +2683,9 @@ keys: enter open ticket   n new   s status   p priority   c comment
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 
+vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
+      [ / ] previous / next group   : command palette
+
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""
 
@@ -2540,6 +2696,14 @@ def main() -> None:
         return
     if "--help" in sys.argv or "-h" in sys.argv:
         print(f"ltui {__version__}\n{HELP}")
+        return
+    if "--init-config" in sys.argv:
+        if LTUI_JSON_CONFIG.exists():
+            print(f"config already exists: {LTUI_JSON_CONFIG}")
+            return
+        LTUI_JSON_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        LTUI_JSON_CONFIG.write_text(CONFIG_TEMPLATE)
+        print(f"wrote {LTUI_JSON_CONFIG} — remap keys, tweak options, restart ltui")
         return
     LTUI().run()
 
