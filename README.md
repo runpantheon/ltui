@@ -147,6 +147,8 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `s`      | change **status**                             |
 | `p`      | change **priority**                           |
 | `a`      | change **assignee** (or unassign)             |
+| `l`      | edit **labels** (multi-select)                |
+| `P`      | move to a **project** — or create one inline  |
 | `c`      | add a **comment** (`ctrl+s` to send)          |
 | `o`      | open ticket in **browser**                    |
 | `y`      | **yank** — copy branch name / url / id        |

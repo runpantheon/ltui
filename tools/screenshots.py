@@ -39,10 +39,10 @@ STATES = [
 ]
 ST = {s["id"]: s for s in STATES}
 
-L_BUG = {"name": "bug", "color": "#f38ba8"}
-L_FEAT = {"name": "feature", "color": "#89b4fa"}
-L_INFRA = {"name": "infra", "color": "#a6e3a1"}
-L_UX = {"name": "design", "color": "#cba6f7"}
+L_BUG = {"id": "lb-bug", "name": "bug", "color": "#f38ba8"}
+L_FEAT = {"id": "lb-feat", "name": "feature", "color": "#89b4fa"}
+L_INFRA = {"id": "lb-infra", "name": "infra", "color": "#a6e3a1"}
+L_UX = {"id": "lb-ux", "name": "design", "color": "#cba6f7"}
 
 NOVA = {"id": "u-nova", "displayName": "nova"}
 KAI = {"id": "u-kai", "displayName": "kai"}
@@ -188,6 +188,23 @@ class DemoApp(LTUI):
             return {"team": {"issues": {"nodes": ISSUES}, "states": {"nodes": STATES}}}
         if "members(first" in query:
             return {"team": {"members": {"nodes": [NOVA, KAI, REI]}}}
+        if "labels(first: 100" in query:
+            return {"team": {"labels": {"nodes": [L_BUG, L_FEAT, L_INFRA, L_UX]}}}
+        if "projects(first: 100" in query:
+            return {"team": {"projects": {"nodes": [P_SYNC, P_POLISH, P_INFRA]}}}
+        if "projectCreate" in query:
+            return {"projectCreate": {"success": True, "project": {"id": "p-new", "name": (variables or {}).get("name", "new"), "color": "#89b4fa"}}}
+        if "labelIds" in query:
+            ids = (variables or {}).get("labelIds", [])
+            all_l = {l["id"]: l for l in (L_BUG, L_FEAT, L_INFRA, L_UX)}
+            return {"issueUpdate": {"success": True, "issue": {"id": (variables or {}).get("id"), "labels": {"nodes": [all_l[i] for i in ids if i in all_l]}}}}
+        if "projectId" in query and "issueUpdate" in query:
+            pid = (variables or {}).get("projectId")
+            all_p = {p["id"]: p for p in (P_SYNC, P_POLISH, P_INFRA)}
+            proj = all_p.get(pid) if pid else None
+            if pid and proj is None:
+                proj = {"id": pid, "name": "brand new", "color": "#89b4fa"}
+            return {"issueUpdate": {"success": True, "issue": {"id": (variables or {}).get("id"), "project": proj}}}
         if "comments(first" in query:
             node = {"comments": {"nodes": COMMENTS}}
             if (variables or {}).get("id") == "i-128":  # the DESC issue

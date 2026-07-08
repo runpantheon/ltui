@@ -9,7 +9,7 @@ WITHOUT ANY WARRANTY. See the LICENSE file.
 
 from __future__ import annotations
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 import json
 import sys
@@ -201,7 +201,7 @@ ISSUE_FIELDS = """
         updatedAt createdAt
         state { id name color type position }
         assignee { id displayName }
-        labels(first: 6) { nodes { name color } }
+        labels(first: 6) { nodes { id name color } }
         relations(first: 6) { nodes { type relatedIssue { identifier } } }
         inverseRelations(first: 6) { nodes { type issue { identifier } } }
         project { id name color }
@@ -272,6 +272,40 @@ mutation($id: String!, $assigneeId: String) {
 M_PRIORITY = """
 mutation($id: String!, $p: Int!) {
   issueUpdate(id: $id, input: {priority: $p}) { success }
+}"""
+
+QL_TEAM_LABELS = """
+query($teamId: String!) {
+  team(id: $teamId) { labels(first: 100) { nodes { id name color } } }
+}"""
+
+QL_TEAM_PROJECTS = """
+query($teamId: String!) {
+  team(id: $teamId) { projects(first: 100) { nodes { id name color } } }
+}"""
+
+M_LABELS = """
+mutation($id: String!, $labelIds: [String!]!) {
+  issueUpdate(id: $id, input: {labelIds: $labelIds}) {
+    success
+    issue { id labels(first: 6) { nodes { id name color } } }
+  }
+}"""
+
+M_PROJECT = """
+mutation($id: String!, $projectId: String) {
+  issueUpdate(id: $id, input: {projectId: $projectId}) {
+    success
+    issue { id project { id name color } }
+  }
+}"""
+
+M_PROJECT_CREATE = """
+mutation($name: String!, $teamIds: [String!]!) {
+  projectCreate(input: {name: $name, teamIds: $teamIds}) {
+    success
+    project { id name color }
+  }
 }"""
 
 M_COMMENT = """
@@ -795,6 +829,107 @@ class ThemeModal(ModalScreen):
         self.dismiss(False)
 
 
+class LabelsModal(ModalScreen):
+    """Multi-select label editor: enter toggles, ctrl+s applies."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("ctrl+s", "apply", show=False),
+    ]
+
+    def __init__(self, title: str, labels: list[dict], selected: set[str]) -> None:
+        super().__init__()
+        self._title = title
+        self._labels = labels
+        self._sel = set(selected)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="labels-box"):
+            yield Static(self._title, id="labels-title")
+            yield NavList(id="labels-list")
+            with Horizontal(id="labels-actions"):
+                yield Static(
+                    f"[{C_DIM}]enter toggles \u00b7 ctrl+s applies \u00b7 esc cancels[/]",
+                    id="labels-hint",
+                )
+                yield Button("cancel", id="labels-cancel")
+                yield Button("\uf00c apply", variant="primary", id="labels-apply")
+
+    def on_mount(self) -> None:
+        pop_in(self.query_one("#labels-box"))
+        self._build()
+        self.query_one("#labels-list").focus()
+
+    def _build(self) -> None:
+        ol = self.query_one("#labels-list", NavList)
+        prev = ol.highlighted
+        ol.clear_options()
+        opts = []
+        for lb in self._labels:
+            row = Text(no_wrap=True, overflow="ellipsis")
+            on_it = lb["id"] in self._sel
+            row.append("\uf00c " if on_it else "  ", style=C_GREEN)
+            if not on_it:
+                row.append(" ")
+            row.append("\u25cf ", style=lb.get("color") or C_DIM)
+            row.append(lb["name"], style=C_TEXT if on_it else C_SUB)
+            opts.append(Option(row, id=lb["id"]))
+        ol.add_options(opts)
+        ol.highlighted = prev if prev is not None else 0
+
+    @on(OptionList.OptionSelected, "#labels-list")
+    def _toggle(self, event: OptionList.OptionSelected) -> None:
+        lid = event.option.id
+        if lid in self._sel:
+            self._sel.discard(lid)
+        else:
+            self._sel.add(lid)
+        self._build()
+
+    @on(Button.Pressed, "#labels-apply")
+    def _apply_btn(self) -> None:
+        self.action_apply()
+
+    @on(Button.Pressed, "#labels-cancel")
+    def _cancel_btn(self) -> None:
+        self.dismiss(None)
+
+    def action_apply(self) -> None:
+        self.dismiss(sorted(self._sel))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ProjectNameModal(ModalScreen):
+    """One-field prompt for a new project name."""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="projname-box"):
+            yield Static(
+                f"[bold {C_SUB}]\uf07b new project[/]", id="projname-title"
+            )
+            yield Input(placeholder="project name", id="projname-input")
+            yield Static(
+                f"[{C_DIM}]enter creates \u00b7 esc cancels[/]", id="projname-hint"
+            )
+
+    def on_mount(self) -> None:
+        pop_in(self.query_one("#projname-box"))
+        self.query_one("#projname-input").focus()
+
+    @on(Input.Submitted, "#projname-input")
+    def _submit(self) -> None:
+        name = self.query_one("#projname-input", Input).value.strip()
+        if name:
+            self.dismiss(name)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class SettingsModal(ModalScreen):
     BINDINGS = [Binding("escape", "close_modal", show=False)]
 
@@ -876,6 +1011,8 @@ class HelpModal(ModalScreen):
             ("n", "new ticket in the current team"),
             ("s", "change status"),
             ("p", "change priority"),
+            ("l", "edit labels"),
+            ("P", "move to a project (or create one)"),
             ("a", "change assignee (or unassign)"),
             ("c", "add a comment (ctrl+s to send)"),
             ("y", "yank — copy branch / url / identifier"),
@@ -1002,6 +1139,8 @@ class LTUI(App):
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", show=False),
         Binding("p", "change_priority", show=False),
+        Binding("l", "edit_labels", show=False),
+        Binding("P", "move_project", show=False),
         Binding("a", "change_assignee", show=False),
         Binding("o", "open_browser", show=False),
         Binding("y", "yank", show=False),
@@ -1089,6 +1228,27 @@ class LTUI(App):
     #picker-list {{ height: auto; max-height: 14; }}
 
     CommentModal {{ align: center middle; background: $ltui-overlay; }}
+    LabelsModal {{ align: center middle; background: $ltui-overlay; }}
+    #labels-box {{
+        width: 46; height: auto; max-height: 80%;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
+    }}
+    #labels-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
+    #labels-list {{ height: auto; max-height: 14; }}
+    #labels-actions {{ height: 3; margin: 1 0 0 0; }}
+    #labels-hint {{ width: 1fr; padding: 1 1; }}
+    #labels-actions Button {{ margin: 0 0 0 1; min-width: 9; }}
+
+    ProjectNameModal {{ align: center middle; background: $ltui-overlay; }}
+    #projname-box {{
+        width: 52; height: auto;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
+    }}
+    #projname-title {{ padding: 0 0 1 0; }}
+    #projname-input {{ border: round {C_VFAINT}; background: transparent; }}
+    #projname-input:focus {{ border: round {C_FAINT}; }}
+    #projname-hint {{ padding: 1 0 0 0; }}
+
     #comment-box {{
         width: 72; height: 20;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
@@ -1173,6 +1333,8 @@ class LTUI(App):
         self._issues: list[dict] = []
         self._states: list[dict] = []
         self._members: dict[str, list] = {}
+        self._team_labels: dict[str, list] = {}
+        self._team_projects: dict[str, list] = {}
         self._team: dict | None = None
         self._viewer_id: str | None = None
         self._viewer_name: str | None = None
@@ -2090,6 +2252,150 @@ class LTUI(App):
 
         self.push_screen(PickerModal(f"move {issue['identifier']}", opts), done)
 
+    def action_edit_labels(self) -> None:
+        issue = self._current_issue()
+        if not issue:
+            return
+        self.open_labels(issue)
+
+    @work(exclusive=True, group="members")
+    async def open_labels(self, issue: dict) -> None:
+        team = self._team
+        labels = self._team_labels.get(team["id"])
+        if labels is None:
+            try:
+                data = await self.gql(QL_TEAM_LABELS, {"teamId": team["id"]})
+                labels = data["team"]["labels"]["nodes"]
+            except Exception as e:
+                self.notify(f"linear: {e}", severity="error")
+                return
+            self._team_labels[team["id"]] = labels
+        if self._team is None or self._team["id"] != team["id"]:
+            return
+        if not labels:
+            self.notify("this team has no labels yet", severity="warning")
+            return
+        current = {
+            lb["id"] for lb in issue["labels"]["nodes"] if lb.get("id")
+        }
+
+        def done(ids: list | None) -> None:
+            if ids is not None and set(ids) != current:
+                self.apply_labels(issue, ids)
+
+        self.push_screen(
+            LabelsModal(f"\uf02b labels \u00b7 {issue['identifier']}", labels, current),
+            done,
+        )
+
+    @work(group="mutate")
+    async def apply_labels(self, issue: dict, label_ids: list) -> None:
+        try:
+            data = await self.gql(
+                M_LABELS, {"id": issue["id"], "labelIds": label_ids}
+            )
+            issue["labels"] = data["issueUpdate"]["issue"]["labels"]
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self._update_detail_meta(issue)
+        self.notify(f"\uf02b {issue['identifier']} \u00b7 labels updated")
+
+    def action_move_project(self) -> None:
+        issue = self._current_issue()
+        if not issue:
+            return
+        self.open_project_picker(issue)
+
+    @work(exclusive=True, group="members")
+    async def open_project_picker(self, issue: dict) -> None:
+        team = self._team
+        projects = self._team_projects.get(team["id"])
+        if projects is None:
+            try:
+                data = await self.gql(QL_TEAM_PROJECTS, {"teamId": team["id"]})
+                projects = data["team"]["projects"]["nodes"]
+            except Exception as e:
+                self.notify(f"linear: {e}", severity="error")
+                return
+            self._team_projects[team["id"]] = projects
+        if self._team is None or self._team["id"] != team["id"]:
+            return
+        current = (issue.get("project") or {}).get("id")
+        opts = []
+        row = Text()
+        row.append("\uf067 ", style=C_GREEN)
+        row.append("new project\u2026", style=C_TEXT)
+        opts.append(Option(row, id="new:"))
+        row = Text()
+        row.append("\u25cb ", style=C_DIM)
+        row.append("no project", style=C_SUB)
+        if current is None:
+            row.append("  \uf00c", style=C_GREEN)
+        opts.append(Option(row, id="none:"))
+        for p in projects:
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append("\uf07b ", style=p.get("color") or C_DIM)
+            row.append(p["name"], style=C_TEXT)
+            if p["id"] == current:
+                row.append("  \uf00c", style=C_GREEN)
+            opts.append(Option(row, id=f"proj:{p['id']}"))
+
+        def done(choice: str | None) -> None:
+            if choice is None:
+                return
+            if choice == "new:":
+                def named(name: str | None) -> None:
+                    if name:
+                        self.create_project_and_assign(issue, name)
+                self.push_screen(ProjectNameModal(), named)
+            elif choice == "none:":
+                if current is not None:
+                    self.apply_project(issue, None)
+            else:
+                pid = choice.removeprefix("proj:")
+                if pid != current:
+                    self.apply_project(issue, pid)
+
+        self.push_screen(
+            PickerModal(f"move {issue['identifier']} to\u2026", opts), done
+        )
+
+    @work(group="mutate")
+    async def create_project_and_assign(self, issue: dict, name: str) -> None:
+        team = self._team
+        try:
+            data = await self.gql(
+                M_PROJECT_CREATE, {"name": name, "teamIds": [team["id"]]}
+            )
+            project = data["projectCreate"]["project"]
+        except Exception as e:
+            self.notify(f"create project failed: {e}", severity="error")
+            return
+        self._team_projects.setdefault(team["id"], []).append(project)
+        self.notify(f"\uf07b created project {project['name']}")
+        self.apply_project(issue, project["id"])
+
+    @work(group="mutate")
+    async def apply_project(self, issue: dict, project_id: str | None) -> None:
+        try:
+            data = await self.gql(
+                M_PROJECT, {"id": issue["id"], "projectId": project_id}
+            )
+            issue["project"] = data["issueUpdate"]["issue"]["project"]
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self._update_detail_meta(issue)
+        pname = (issue.get("project") or {}).get("name") or "no project"
+        self.notify(f"\uf07b {issue['identifier']} \u2192 {pname}")
+
     def action_change_priority(self) -> None:
         issue = self._current_issue()
         if not issue:
@@ -2218,7 +2524,8 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
       linear-cli's config. no key? ltui asks on first launch.
 
 keys: enter open ticket   n new   s status   p priority   c comment
-      a assign   o browser   y yank   / filter   m mine only   v group
+      a assign   l labels   P project   o browser   y yank   / filter
+      m mine only   v group
       V one project   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
