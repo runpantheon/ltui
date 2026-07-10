@@ -9,6 +9,7 @@ straight from the GitHub API and draws the chart itself. Stdlib only.
 
 import json
 import os
+import re
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -138,10 +139,28 @@ def render(dates: list[datetime], theme: dict) -> str:
 '''
 
 
+def stale(dates: list[datetime]) -> bool:
+    """Rewrite only when the count changed or the chart is a week old —
+    otherwise the daily cron would commit every run (the 'now' endpoint
+    of the line always moves a little)."""
+    try:
+        old = (OUT_DIR / "star-history-dark.svg").read_text()
+        count = int(re.search(r"&#9733; (\d+)<", old)[1])
+        drawn = datetime.strptime(
+            re.search(r"updated (\d{4}-\d{2}-\d{2})<", old)[1], "%Y-%m-%d"
+        ).replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    return count != len(dates) or (datetime.now(timezone.utc) - drawn).days >= 7
+
+
 def main() -> None:
     dates = fetch_star_dates()
     if not dates:
         print("no stargazers returned — leaving existing charts alone")
+        return
+    if not stale(dates):
+        print(f"chart already current ({len(dates)} stars) — skipping")
         return
     OUT_DIR.mkdir(exist_ok=True)
     for name, theme in THEMES.items():
