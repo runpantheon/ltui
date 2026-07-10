@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """jtui — a fast, clean TUI for Jira.
 
-Copyright 2026 Gheat
-
-Licensed under the Apache License, Version 2.0 (the "License"); you may
-not use this file except in compliance with the License. You may obtain
-a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
-Distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
-ANY KIND. See the LICENSE file in the repository root.
+Copyright (C) 2026 Gheat / Pantheon
+This program is free software licensed under the GNU GPL v3 or later;
+you may redistribute and modify it only under those terms. Distributed
+WITHOUT ANY WARRANTY. Commercial licenses are available from Pantheon
+(dual licensing) — see the repository README. See also the LICENSE file.
 """
 
 from __future__ import annotations

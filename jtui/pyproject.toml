@@ -7,7 +7,7 @@ name = "jtui"
 version = "0.2.0"
 description = "A fast, beautiful TUI for Jira — status-grouped tickets, instant startup, full keyboard + mouse control"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Gheat" }]
 requires-python = ">=3.11"
 dependencies = [
@@ -18,7 +18,7 @@ keywords = ["jira", "tui", "terminal", "textual", "issue-tracker", "productivity
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Topic :: Terminals",
     "Topic :: Software Development :: Bug Tracking",

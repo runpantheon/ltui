@@ -1,5 +1,9 @@
 ltui — the tracker TUI suite (ltui / jtui / sctui)
-Copyright 2026 Gheat
+Copyright (C) 2026 Gheat / Pantheon
+
+Licensed under GNU GPL v3 or later for the community, with commercial
+licenses available from Pantheon for use outside the GPL's terms
+(dual licensing). See LICENSE and the README's license section.
 
 Originally developed at https://github.com/Gheat1 and migrated to the
 Pantheon organization (https://github.com/runpantheon) in July 2026.
