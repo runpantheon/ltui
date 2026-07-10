@@ -57,6 +57,17 @@ launch ──▶ render cached board (~50ms) ──▶ you're already working
 - ⌨️ **keyboard first, mouse welcome** — vim keys everywhere, but everything
   is clickable, and the panel dividers drag to resize
 
+## star history
+
+<div align="center">
+<a href="https://star-history.com/#runpantheon/ltui&Date">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/star-history-dark.svg">
+<img src="assets/star-history-light.svg" alt="star history" width="70%">
+</picture>
+</a>
+</div>
+
 ## what they all do
 
 |     |                                                                                     |
@@ -112,19 +123,6 @@ workflow-aware **transitions**, sctui's `p` sets the **story type**
 (bug/feature/chore) since Shortcut has no priority field, epics/projects
 map to whatever the tracker calls them. The shared design system is
 published separately as [**ricekit**](https://github.com/Gheat1/ricekit).
-
-## star history
-
-<div align="center">
-<a href="https://star-history.com/#runpantheon/ltui&Date">
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="assets/star-history-dark.svg">
-<img src="assets/star-history-light.svg" alt="star history" width="70%">
-</picture>
-</a>
-
-<sub>rendered in-repo by <a href=".github/workflows/star-chart.yml">a tiny workflow</a> — refreshes on every star</sub>
-</div>
 
 ## history & credits
 
