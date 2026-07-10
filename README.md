@@ -117,8 +117,13 @@ published separately as [**ricekit**](https://github.com/Gheat1/ricekit).
 
 <div align="center">
 <a href="https://star-history.com/#runpantheon/ltui&Date">
-<img src="https://api.star-history.com/svg?repos=runpantheon/ltui&type=Date&theme=dark" alt="star history" width="70%">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/star-history-dark.svg">
+<img src="assets/star-history-light.svg" alt="star history" width="70%">
+</picture>
 </a>
+
+<sub>rendered in-repo by <a href=".github/workflows/star-chart.yml">a tiny workflow</a> — refreshes on every star</sub>
 </div>
 
 ## history & credits
