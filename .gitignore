@@ -5,6 +5,6 @@ dist/
 build/
 .venv/
 venv/
-assets/*.svg
+*/assets/*.svg
 CLAUDE.md
 .env

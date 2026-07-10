@@ -9,7 +9,7 @@ Your whole workspace, grouped the way triage actually works —
 
 [![python](https://img.shields.io/badge/python-3.11+-89b4fa?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![built with textual](https://img.shields.io/badge/built%20with-textual-b4befe?style=flat-square)](https://github.com/Textualize/textual)
-[![license](https://img.shields.io/badge/license-GPLv3-a6e3a1?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-a6e3a1?style=flat-square)](LICENSE)
 [![jira api](https://img.shields.io/badge/jira-rest%20api-0052cc?style=flat-square&logo=jira&logoColor=white)](https://developer.atlassian.com/cloud/jira/platform/rest/v2/)
 
 <img src="assets/hero.png" alt="jtui — issue list with detail panel" width="100%">
@@ -22,9 +22,8 @@ Your whole workspace, grouped the way triage actually works —
 ---
 
 > [!NOTE]
-> **not on Jira?** jtui has siblings: [**ltui**](https://github.com/Gheat1/ltui) for Linear
-> (battle-tested daily) and [**sctui**](https://github.com/Gheat1/sctui) for Shortcut —
-> same app, same speed, same themes.
+> **not on Jira?** this repo also ships [**ltui**](../ltui/) for Linear and
+> [**sctui**](../sctui/) for Shortcut — same app, same speed, same themes.
 
 ## why another Jira TUI?
 
@@ -71,15 +70,15 @@ works on any linux · macOS · windows, straight from this repo.
 grab [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io) and:
 
 ```sh
-uv tool install git+https://github.com/Gheat1/jtui
+uv tool install "git+https://github.com/runpantheon/ltui#subdirectory=jtui"
 # or
-pipx install git+https://github.com/Gheat1/jtui
+pipx install "git+https://github.com/runpantheon/ltui#subdirectory=jtui"
 ```
 
 or build it yourself from source:
 
 ```sh
-git clone https://github.com/Gheat1/jtui && cd jtui
+git clone https://github.com/runpantheon/ltui && cd ltui/jtui
 pip install .
 ```
 
@@ -327,7 +326,7 @@ another site to switch.
 It's one Python file. Read it in ten minutes, break it in five:
 
 ```sh
-git clone https://github.com/Gheat1/jtui && cd jtui
+git clone https://github.com/runpantheon/ltui && cd ltui/jtui
 python -m venv .venv && .venv/bin/pip install -e . && .venv/bin/jtui
 ```
 
@@ -340,17 +339,17 @@ PRs welcome — keep it fast, keep it pretty.
 - built for **Jira Cloud** (REST v2, API-token auth); it also tries the
   older search endpoint so Server/DC ≥ 8 has a decent shot.
 - **fresh port**: jtui shares its entire UI with the battle-tested
-  [ltui](https://github.com/Gheat1/ltui), but the Jira layer is young —
+  [ltui](https://github.com/runpantheon/ltui/tree/main/ltui), but the Jira layer is young —
   if your workspace does something exotic, open an issue with the error
   text (it surfaces Jira's own messages).
 
 ## credits
 
 made by [**@Gheat1**](https://github.com/Gheat1) — issues, ideas, and PRs
-welcome over at [Gheat1/jtui](https://github.com/Gheat1/jtui).
+welcome over at [Gheat1/jtui](https://github.com/runpantheon/ltui/tree/main/jtui).
 
-jtui is the Jira sibling of [**ltui**](https://github.com/Gheat1/ltui) (Linear) and
-[**sctui**](https://github.com/Gheat1/sctui) (Shortcut); the shared design system
+jtui is the Jira sibling of [**ltui**](https://github.com/runpantheon/ltui/tree/main/ltui) (Linear) and
+[**sctui**](https://github.com/runpantheon/ltui/tree/main/sctui) (Shortcut); the shared design system
 lives in [**ricekit**](https://github.com/Gheat1/ricekit).
 
 standing on the shoulders of [textual](https://github.com/Textualize/textual)
@@ -358,9 +357,9 @@ and the [Jira REST API](https://developer.atlassian.com/cloud/jira/platform/rest
 
 ## license
 
-[GPL-3.0](LICENSE) — free to use anywhere, work included. Forks and
-redistributions must stay open source under the same license and keep the
-credit; rebranding it as closed software and selling it is not permitted.
+[Apache-2.0](../LICENSE) — free to use, modify, and redistribute with
+attribution. Copyright 2026 Gheat / Pantheon.
+
 
 <div align="center">
 <sub>not affiliated with Jira — just a fan of good issue trackers and good terminals</sub>

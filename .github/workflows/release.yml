@@ -8,22 +8,20 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # attach dists to the GitHub release
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: build
+      - name: build all three apps
         run: |
           python -m pip install build
-          python -m build
+          for app in ltui jtui sctui; do
+            python -m build "$app" --outdir dist
+          done
       - name: GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
-
-  # PyPI publishing is intentionally not wired up yet — when the
-  # pypi.org trusted publisher is configured, add a publish job with
-  # pypa/gh-action-pypi-publish and `id-token: write` permissions.

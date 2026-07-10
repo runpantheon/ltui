@@ -9,7 +9,7 @@ Your whole workspace, grouped the way triage actually works —
 
 [![python](https://img.shields.io/badge/python-3.11+-89b4fa?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![built with textual](https://img.shields.io/badge/built%20with-textual-b4befe?style=flat-square)](https://github.com/Textualize/textual)
-[![license](https://img.shields.io/badge/license-GPLv3-a6e3a1?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-a6e3a1?style=flat-square)](LICENSE)
 [![shortcut api](https://img.shields.io/badge/shortcut-rest%20api%20v3-58b1e4?style=flat-square)](https://developer.shortcut.com/api/rest/v3)
 
 <img src="assets/hero.png" alt="sctui — issue list with detail panel" width="100%">
@@ -22,9 +22,8 @@ Your whole workspace, grouped the way triage actually works —
 ---
 
 > [!NOTE]
-> **on Linear or Jira instead?** sctui has twins: [**ltui**](https://github.com/Gheat1/ltui)
-> for Linear and [**jtui**](https://github.com/Gheat1/jtui) for Jira — same app, same
-> speed, same themes.
+> **not on Shortcut?** this repo also ships [**ltui**](../ltui/) for Linear and
+> [**jtui**](../jtui/) for Jira — same app, same speed, same themes.
 
 ## why another Shortcut TUI?
 
@@ -71,15 +70,15 @@ works on any linux · macOS · windows, straight from this repo.
 grab [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io) and:
 
 ```sh
-uv tool install git+https://github.com/Gheat1/sctui
+uv tool install "git+https://github.com/runpantheon/ltui#subdirectory=sctui"
 # or
-pipx install git+https://github.com/Gheat1/sctui
+pipx install "git+https://github.com/runpantheon/ltui#subdirectory=sctui"
 ```
 
 or build it yourself from source:
 
 ```sh
-git clone https://github.com/Gheat1/sctui && cd sctui
+git clone https://github.com/runpantheon/ltui && cd ltui/sctui
 pip install .
 ```
 
@@ -322,7 +321,7 @@ another site to switch.
 It's one Python file. Read it in ten minutes, break it in five:
 
 ```sh
-git clone https://github.com/Gheat1/sctui && cd sctui
+git clone https://github.com/runpantheon/ltui && cd ltui/sctui
 python -m venv .venv && .venv/bin/pip install -e . && .venv/bin/sctui
 ```
 
@@ -337,16 +336,16 @@ PRs welcome — keep it fast, keep it pretty.
 - the detail panel shows the story's **task checklist** with a done-count,
   plus blockers from story links.
 - **fresh port**: sctui shares its entire UI with the battle-tested
-  [ltui](https://github.com/Gheat1/ltui), but the Shortcut layer is young —
+  [ltui](https://github.com/runpantheon/ltui/tree/main/ltui), but the Shortcut layer is young —
   if your workspace does something exotic, open an issue with the error
   text (it surfaces the API's own messages).
 
 ## credits
 
 made by [**@Gheat1**](https://github.com/Gheat1) — issues, ideas, and PRs
-welcome over at [Gheat1/sctui](https://github.com/Gheat1/sctui).
+welcome over at [Gheat1/sctui](https://github.com/runpantheon/ltui/tree/main/sctui).
 
-sctui is the Shortcut sibling of [**ltui**](https://github.com/Gheat1/ltui) (Linear) and [**jtui**](https://github.com/Gheat1/jtui) (Jira);
+sctui is the Shortcut sibling of [**ltui**](https://github.com/runpantheon/ltui/tree/main/ltui) (Linear) and [**jtui**](https://github.com/runpantheon/ltui/tree/main/jtui) (Jira);
 the shared design system lives in [**ricekit**](https://github.com/Gheat1/ricekit).
 
 standing on the shoulders of [textual](https://github.com/Textualize/textual)
@@ -354,9 +353,9 @@ and the [Shortcut REST API](https://developer.shortcut.com/api/rest/v3).
 
 ## license
 
-[GPL-3.0](LICENSE) — free to use anywhere, work included. Forks and
-redistributions must stay open source under the same license and keep the
-credit; rebranding it as closed software and selling it is not permitted.
+[Apache-2.0](../LICENSE) — free to use, modify, and redistribute with
+attribution. Copyright 2026 Gheat / Pantheon.
+
 
 <div align="center">
 <sub>not affiliated with Shortcut — just a fan of good issue trackers and good terminals</sub>

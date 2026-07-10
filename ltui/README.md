@@ -9,7 +9,7 @@ Your whole workspace, grouped the way triage actually works —
 
 [![python](https://img.shields.io/badge/python-3.11+-89b4fa?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![built with textual](https://img.shields.io/badge/built%20with-textual-b4befe?style=flat-square)](https://github.com/Textualize/textual)
-[![license](https://img.shields.io/badge/license-GPLv3-a6e3a1?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-a6e3a1?style=flat-square)](LICENSE)
 [![linear api](https://img.shields.io/badge/linear-graphql%20api-5e6ad2?style=flat-square&logo=linear&logoColor=white)](https://developers.linear.app)
 
 <img src="assets/hero.png" alt="ltui — issue list with detail panel" width="100%">
@@ -22,9 +22,8 @@ Your whole workspace, grouped the way triage actually works —
 ---
 
 > [!NOTE]
-> **not on Linear?** ltui has siblings: [**jtui**](https://github.com/Gheat1/jtui) for Jira
-> and [**sctui**](https://github.com/Gheat1/sctui) for Shortcut — same app, same speed,
-> same themes.
+> **not on Linear?** this repo also ships [**jtui**](../jtui/) for Jira and
+> [**sctui**](../sctui/) for Shortcut — same app, same speed, same themes.
 
 ## why another Linear TUI?
 
@@ -71,15 +70,15 @@ works on any linux · macOS · windows, straight from this repo.
 grab [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io) and:
 
 ```sh
-uv tool install git+https://github.com/Gheat1/ltui
+uv tool install "git+https://github.com/runpantheon/ltui#subdirectory=ltui"
 # or
-pipx install git+https://github.com/Gheat1/ltui
+pipx install "git+https://github.com/runpantheon/ltui#subdirectory=ltui"
 ```
 
 or build it yourself from source:
 
 ```sh
-git clone https://github.com/Gheat1/ltui && cd ltui
+git clone https://github.com/runpantheon/ltui && cd ltui/ltui
 pip install .
 ```
 
@@ -330,7 +329,7 @@ linear-cli.
 It's one Python file. Read it in ten minutes, break it in five:
 
 ```sh
-git clone https://github.com/Gheat1/ltui && cd ltui
+git clone https://github.com/runpantheon/ltui && cd ltui/ltui
 python -m venv .venv && .venv/bin/pip install -e . && .venv/bin/ltui
 ```
 
@@ -339,21 +338,21 @@ PRs welcome — keep it fast, keep it pretty.
 ## credits
 
 made by [**@Gheat1**](https://github.com/Gheat1) — issues, ideas, and PRs
-welcome over at [Gheat1/ltui](https://github.com/Gheat1/ltui).
+welcome over at [Gheat1/ltui](https://github.com/runpantheon/ltui/tree/main/ltui).
 
 building your own TUI? the themes, widgets, and design system behind ltui
 live in [**ricekit**](https://github.com/Gheat1/ricekit) — and ltui has
-siblings: [**jtui**](https://github.com/Gheat1/jtui) for Jira and
-[**sctui**](https://github.com/Gheat1/sctui) for Shortcut.
+siblings: [**jtui**](https://github.com/runpantheon/ltui/tree/main/jtui) for Jira and
+[**sctui**](https://github.com/runpantheon/ltui/tree/main/sctui) for Shortcut.
 
 standing on the shoulders of [textual](https://github.com/Textualize/textual)
 and the [Linear API](https://developers.linear.app).
 
 ## license
 
-[GPL-3.0](LICENSE) — free to use anywhere, work included. Forks and
-redistributions must stay open source under the same license and keep the
-credit; rebranding it as closed software and selling it is not permitted.
+[Apache-2.0](../LICENSE) — free to use, modify, and redistribute with
+attribution. Copyright 2026 Gheat / Pantheon.
+
 
 <div align="center">
 <sub>not affiliated with Linear — just a fan of good issue trackers and good terminals</sub>
