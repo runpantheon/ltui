@@ -31,6 +31,7 @@ THEMES = {
         "axis": "#3a3a3a",
         "text": "#a0a0a0",
         "title": "#e8e8e8",
+        "accent": "#e8e8e8",
     },
     "light": {
         "bg": "#ffffff",
@@ -40,6 +41,18 @@ THEMES = {
         "axis": "#d0d0d0",
         "text": "#666666",
         "title": "#0d0d0d",
+        "accent": "#0d0d0d",
+    },
+    # catppuccin mocha — matches ltui's default theme
+    "mocha": {
+        "bg": "#181825",
+        "line": "#b4befe",
+        "fill": "#b4befe",
+        "grid": "#313244",
+        "axis": "#45475a",
+        "text": "#a6adc8",
+        "title": "#cdd6f4",
+        "accent": "#f9e2af",
     },
 }
 
@@ -123,16 +136,23 @@ def render(dates: list[datetime], theme: dict) -> str:
 
     ex, ey = x(t1), y(total)
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-family="ui-monospace, 'JetBrains Mono', 'SFMono-Regular', Menlo, monospace">
+  <defs>
+    <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="{theme["fill"]}" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="{theme["fill"]}" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
   <rect width="{W}" height="{H}" rx="10" fill="{theme["bg"]}"/>
   <text x="{ML}" y="28" fill="{theme["title"]}" font-size="15" font-weight="bold">{REPO}</text>
   <text x="{W - MR}" y="28" text-anchor="end" fill="{theme["text"]}" font-size="13">github stars</text>
   {"".join(grid)}
   <line x1="{ML}" y1="{MT}" x2="{ML}" y2="{H - MB}" stroke="{theme["axis"]}" stroke-width="1"/>
   <line x1="{ML}" y1="{H - MB}" x2="{W - MR}" y2="{H - MB}" stroke="{theme["axis"]}" stroke-width="1"/>
-  <polygon points="{area}" fill="{theme["fill"]}" opacity="0.08"/>
+  <polygon points="{area}" fill="url(#area)"/>
   <polyline points="{path}" fill="none" stroke="{theme["line"]}" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="{ex:.1f}" cy="{ey:.1f}" r="7" fill="{theme["line"]}" opacity="0.25"/>
   <circle cx="{ex:.1f}" cy="{ey:.1f}" r="4" fill="{theme["line"]}"/>
-  <text x="{min(ex, W - MR - 8):.1f}" y="{ey - 12:.1f}" text-anchor="end" fill="{theme["title"]}" font-size="14" font-weight="bold">&#9733; {total}</text>
+  <text x="{min(ex, W - MR - 8):.1f}" y="{ey - 12:.1f}" text-anchor="end" fill="{theme["accent"]}" font-size="14" font-weight="bold">&#9733; {total}</text>
   {"".join(labels)}
   <text x="{W - MR}" y="{H - 14}" text-anchor="end" fill="{theme["text"]}" font-size="10">updated {now.strftime("%Y-%m-%d")}</text>
 </svg>
@@ -143,6 +163,8 @@ def stale(dates: list[datetime]) -> bool:
     """Rewrite only when the count changed or the chart is a week old —
     otherwise the daily cron would commit every run (the 'now' endpoint
     of the line always moves a little)."""
+    if not all((OUT_DIR / f"star-history-{n}.svg").exists() for n in THEMES):
+        return True
     try:
         old = (OUT_DIR / "star-history-dark.svg").read_text()
         count = int(re.search(r"&#9733; (\d+)<", old)[1])
