@@ -10,7 +10,7 @@ WITHOUT ANY WARRANTY. Commercial licenses are available from Pantheon
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import json
 import sys
@@ -359,6 +359,9 @@ DEFAULT_KEYBINDS = {
     "next_group": (["right_square_bracket"], None),
     "prev_group": (["left_square_bracket"], None),
     "command_palette": (["colon"], None),
+    # lateral arrows walk the panes: sidebar ◂ issues ▸ detail
+    "focus_left": (["left"], None),
+    "focus_right": (["right"], None),
 }
 
 
@@ -412,7 +415,9 @@ CONFIG_TEMPLATE = """{
     "yank": "y",
     "next_group": "right_square_bracket",
     "prev_group": "left_square_bracket",
-    "command_palette": "colon"
+    "command_palette": "colon",
+    "focus_left": "left",
+    "focus_right": "right"
   },
   "options": {
     "auto_refresh_seconds": 180,
@@ -671,6 +676,10 @@ class DetailScroll(VerticalScroll):
         Binding("ctrl+u", "page_up", show=False),
         Binding("ctrl+f", "page_down", show=False),
         Binding("ctrl+b", "page_up", show=False),
+        # VerticalScroll grabs ←/→ for horizontal scroll (a no-op here);
+        # reroute them to pane navigation instead
+        Binding("left", "app.focus_left", show=False),
+        Binding("right", "app.focus_right", show=False),
     ]
 
 
@@ -1164,6 +1173,7 @@ class HelpModal(ModalScreen):
             ("[ / ]", "previous / next group"),
             (":", "command palette"),
             ("j/k ↑↓", "move around lists and the detail panel"),
+            ("← / →", "switch panes — → on a ticket opens it"),
             ("g / G", "jump to top / bottom"),
             ("enter", "open ticket detail (click works too)"),
             ("esc", "close panel · dismiss modal · clear filter"),
@@ -2534,6 +2544,27 @@ class JTUI(App):
         ol.highlighted = target
         ol.focus()
 
+    def action_focus_left(self) -> None:
+        """← walks panes: detail → issues → sidebar. No-op inside modals."""
+        fid = self.focused.id if self.focused else None
+        if fid == "d-scroll":
+            self.query_one("#issues", NavList).focus()
+        elif fid == "issues":
+            self.query_one("#teams", NavList).focus()
+
+    def action_focus_right(self) -> None:
+        """→ walks panes: sidebar → issues → detail, opening it if needed."""
+        fid = self.focused.id if self.focused else None
+        if fid == "teams":
+            self.query_one("#issues", NavList).focus()
+        elif fid == "issues":
+            issue = self._current_issue()
+            if issue is None:
+                return
+            if self._detail_issue is None:
+                self.show_detail(issue)
+            self.query_one("#d-scroll").focus()
+
     def action_toggle_group(self) -> None:
         self._group_by = "project" if self._group_by == "status" else "status"
         self._save_state()
@@ -2915,6 +2946,9 @@ keys: enter open ticket   n new   s status   p priority   c comment
       V one epic   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
+
+arrows: up/down move · left/right walk the panes sidebar - issues - detail
+        (right on a ticket opens it; every list takes arrows everywhere)
 
 vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
       [ / ] previous / next group   : command palette

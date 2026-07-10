@@ -141,6 +141,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | key      | action                                        |
 | -------- | --------------------------------------------- |
 | `↑↓` `jk` | move around (lists *and* the detail panel)   |
+| `←` `→`  | walk the panes: teams ◂ issues ▸ detail — `→` on a ticket opens it |
 | `enter` / click | open ticket detail panel                |
 | `esc`    | close panel / dismiss modal / clear filter    |
 | `n`      | **new ticket** in the current team            |

@@ -54,8 +54,9 @@ launch ──▶ render cached board (~50ms) ──▶ you're already working
   minutes after that
 - 🎨 **actually pretty** — rounded borders, the trackers' own state colors,
   nerd-font icons, priority bars, subtle fade animations
-- ⌨️ **keyboard first, mouse welcome** — vim keys everywhere, but everything
-  is clickable, and the panel dividers drag to resize
+- ⌨️ **keyboard first, mouse welcome** — arrow keys do everything (`←`/`→`
+  walk the panes, `→` opens the ticket), vim keys for those who want them,
+  everything is clickable, and the panel dividers drag to resize
 
 ## star history
 
