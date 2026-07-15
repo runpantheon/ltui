@@ -115,6 +115,17 @@ background at all (your terminal's blur/transparency shows through), and
 **`system`** draws the whole UI in your terminal's own ANSI palette — your
 kitty theme *is* the app theme. Made for rice.
 
+## gallery
+
+The rest of the tour, scrollable. Every app ships the full set — browse them
+as galleries: [**ltui**](ltui/assets/) · [**jtui**](jtui/assets/) · [**sctui**](sctui/assets/)
+
+| | |
+| --- | --- |
+| ![welcome tour](ltui/assets/welcome.png) <br><sub>the 20-second welcome tour</sub> | ![guided auth](ltui/assets/onboard.png) <br><sub>guided auth on first launch</sub> |
+| ![creating a ticket](ltui/assets/new-ticket.png) <br><sub>create tickets without leaving the board</sub> | ![commenting](ltui/assets/comment.png) <br><sub>comment from the detail panel</sub> |
+| ![theme picker](ltui/assets/themes.png) <br><sub>live theme preview as you scroll</sub> | ![settings](ltui/assets/settings.png) <br><sub>settings — every key rebindable</sub> |
+
 ## one muscle memory
 
 The three apps share ~80% of their code through a normalizing adapter
