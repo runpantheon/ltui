@@ -14,6 +14,9 @@ __version__ = "0.15.0"
 
 import asyncio
 import json
+import os
+import re
+import subprocess
 import sys
 import tomllib
 import webbrowser
@@ -38,6 +41,11 @@ API_URL = "https://api.linear.app/graphql"
 CONFIG = Path.home() / ".config/linear-cli/config.toml"
 LTUI_CONFIG = Path.home() / ".config/ltui/config.toml"
 LTUI_JSON_CONFIG = Path.home() / ".config/ltui/config.json"
+# Linear desktop's "Work on issue -> Custom script" hook; reused verbatim.
+LINEAR_CODING_TOOLS = Path.home() / ".linear/coding-tools.json"
+# Mirrors Linear's "Prompt template" setting so ltui builds the same prompt.
+LINEAR_PROMPT_TEMPLATE = Path.home() / ".linear/prompt-template.txt"
+PLACEHOLDER = re.compile(r"\{\{([A-Za-z][\w.]*)\}\}")
 STATE_FILE = Path.home() / ".local/state/ltui/state.json"
 CACHE_DIR = Path.home() / ".cache/ltui"
 AUTO_REFRESH_SECONDS = 180
@@ -383,6 +391,7 @@ DEFAULT_KEYBINDS = {
     "change_assignee": (["a"], None),
     "open_browser": (["o"], None),
     "yank": (["y"], None),
+    "run_script": (["x"], None),
     # vim layer (additive)
     "next_group": (["right_square_bracket"], None),
     "prev_group": (["left_square_bracket"], None),
@@ -441,6 +450,7 @@ CONFIG_TEMPLATE = """{
     "change_assignee": "a",
     "open_browser": "o",
     "yank": "y",
+    "run_script": "x",
     "next_group": "right_square_bracket",
     "prev_group": "left_square_bracket",
     "command_palette": "colon",
@@ -456,8 +466,6 @@ CONFIG_TEMPLATE = """{
 
 
 def load_api_key() -> str:
-    import os
-
     if key := os.environ.get("LINEAR_API_KEY"):
         return key
     try:
@@ -1236,6 +1244,7 @@ class HelpModal(ModalScreen):
             ("c", "add a comment (ctrl+s to send)"),
             ("y", "yank — copy branch / url / identifier"),
             ("o", "open in browser"),
+            ("x", "run custom script (~/.linear/coding-tools.json)"),
         ]),
         ("view", [
             ("/", "filter issues"),
@@ -3067,6 +3076,95 @@ class LTUI(App):
             webbrowser.open(issue["url"])
             self.notify(f" opened {issue['identifier']}")
 
+    def action_run_script(self) -> None:
+        """Run the local custom script from ~/.linear/coding-tools.json against
+        the selected issue — the same hook Linear desktop's "Work on issue →
+        Custom script" fires, with the same LINEAR_* env contract, so one
+        script serves both."""
+        issue = self._current_issue()
+        if not issue:
+            return
+        try:
+            cfg = json.loads(LINEAR_CODING_TOOLS.read_text()).get("openIssue") or {}
+        except FileNotFoundError:
+            self.notify(f" no {LINEAR_CODING_TOOLS}", severity="error")
+            return
+        except Exception as e:
+            self.notify(f" bad coding-tools.json: {e}", severity="error")
+            return
+        path = cfg.get("path")
+        if not path:
+            self.notify(" coding-tools.json: openIssue.path missing", severity="error")
+            return
+        path = Path(str(path)).expanduser()
+
+        title = issue.get("title") or ""
+        body = issue.get("description") or ""
+        tmpl = {
+            "issue.identifier": issue.get("identifier") or "",
+            "issue.branchName": (
+                issue.get("branchName") or (issue.get("identifier") or "").lower()
+            ),
+            "issue.title": title,
+            "issue.url": issue.get("url") or "",
+            "project.name": (issue.get("project") or {}).get("name") or "",
+            "context": f"{title}\n\n{body}".strip(),
+            "workDir": str(Path.cwd()),
+        }
+
+        def interp(s: str) -> str:
+            # one pass: a {{...}} that arrives *inside* ticket text — which
+            # anyone with workspace access can write — stays literal instead
+            # of being expanded on a later iteration.
+            return PLACEHOLDER.sub(lambda m: tmpl.get(m[1], m[0]), s)
+
+        # Linear renders its "Prompt template" setting before handing the
+        # script LINEAR_PROMPT; do the same so both entry points agree.
+        try:
+            template = LINEAR_PROMPT_TEMPLATE.read_text()
+        except Exception:
+            template = "{{context}}"
+        tmpl["prompt"] = interp(template).strip()
+
+        exported = {
+            "LINEAR_ISSUE_IDENTIFIER": tmpl["issue.identifier"],
+            "LINEAR_ISSUE_BRANCH_NAME": tmpl["issue.branchName"],
+            "LINEAR_ISSUE_TITLE": tmpl["issue.title"],
+            "LINEAR_ISSUE_URL": tmpl["issue.url"],
+            "LINEAR_PROJECT_NAME": tmpl["project.name"],
+            "LINEAR_PROMPT": tmpl["prompt"],
+            "LINEAR_WORK_DIR": tmpl["workDir"],
+        }
+        # Linear's semantics: an "env" list selects which vars to expose. ltui
+        # owns the whole LINEAR_ namespace in the child, so what the allowlist
+        # leaves out is genuinely absent rather than inherited from our own
+        # environment behind the user's back — LINEAR_API_KEY above all. A
+        # name that isn't ours but is in our environment can still be listed
+        # explicitly, which makes passing the key along a deliberate act.
+        wanted = cfg.get("env")
+        if isinstance(wanted, list) and wanted:
+            exported = {
+                k: exported.get(k, os.environ.get(k, ""))
+                for k in wanted
+                if isinstance(k, str) and (k in exported or k in os.environ)
+            }
+        inherited = {k: v for k, v in os.environ.items() if not k.startswith("LINEAR_")}
+
+        argv = [str(path), *(interp(str(a)) for a in (cfg.get("args") or []))]
+        try:
+            subprocess.Popen(
+                argv,
+                env={**inherited, **exported, "LINEAR_TOOL_COMMAND": "ltui"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,  # never fight the TUI for the tty
+            )
+        except Exception as e:
+            self.notify(f" script failed: {e}", severity="error")
+            return
+        self.notify(f" script launched for {issue['identifier']}")
+
     def action_yank(self) -> None:
         issue = self._current_issue()
         if not issue:
@@ -3110,6 +3208,7 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
 
 keys: enter open ticket   n new   s status   p priority   c comment
       a assign   l labels   P project   o browser   y yank   / filter
+      x run ~/.linear/coding-tools.json custom script on the ticket
       m mine only   v group status/project/initiative
       V one project   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help

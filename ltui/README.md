@@ -53,6 +53,7 @@ launch. ltui doesn't:
 | 🎯  | **initiative view** — press `v` again to group by **initiative**, the level above projects: every project's tickets gathered under the goal they ladder up to, live initiatives first |
 | 🌐  | **every team at once** — the top row of the teams pane is **all teams**: one board spanning your whole workspace, with each team's `In Progress` merged into a single group instead of one per team |
 | 🌿  | **`y` yanks the git branch** — Linear's generated branch name straight to your clipboard (or the URL / identifier); ticket → `git checkout -b` in seconds |
+| 🚀  | **`x` hands the ticket to your tools** — runs the same `~/.linear/coding-tools.json` script Linear's desktop *Work on issue → Custom script* fires, with the same `LINEAR_*` variables and your Prompt template, so one script serves both |
 | 👥  | **assign without leaving** — `a` reassigns to anyone on the team, or you, or nobody |
 | 🌳  | **hierarchy aware** — the detail panel shows the parent ticket and all sub-issues with a done-count, next to blocked/blocking relations |
 | 🔄  | **never stale** — the board silently re-syncs every 3 minutes |
@@ -155,6 +156,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `c`      | add a **comment** (`ctrl+s` to send)          |
 | `o`      | open ticket in **browser**                    |
 | `y`      | **yank** — copy branch name / url / id        |
+| `x`      | **run your custom script** on the ticket      |
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
 | `v`      | cycle grouping: **status → project → initiative** |
@@ -236,6 +238,51 @@ ltui --init-config    # writes ~/.config/ltui/config.json
   }
 }
 ```
+
+### custom script (`x`)
+
+`x` runs a local script against the highlighted ticket. It reads the same file
+Linear's desktop app uses for **Work on issue → Custom script**, so if you have
+that set up already there is nothing new to configure:
+
+```jsonc
+// ~/.linear/coding-tools.json
+{
+  "openIssue": {
+    "path": "/absolute/path/to/your-script",
+    "args": ["--branch", "{{issue.branchName}}"],   // {{...}} interpolated
+    "env": ["LINEAR_PROMPT", "LINEAR_ISSUE_IDENTIFIER", "LINEAR_ISSUE_BRANCH_NAME"]
+  }
+}
+```
+
+Placeholders for `args`: `{{issue.identifier}}`, `{{issue.branchName}}`,
+`{{issue.title}}`, `{{issue.url}}`, `{{project.name}}`, `{{context}}`,
+`{{prompt}}`, `{{workDir}}`.
+
+The `env` list is an allowlist selecting which of `LINEAR_ISSUE_IDENTIFIER`,
+`LINEAR_ISSUE_BRANCH_NAME`, `LINEAR_ISSUE_TITLE`, `LINEAR_ISSUE_URL`,
+`LINEAR_PROJECT_NAME`, `LINEAR_PROMPT` and `LINEAR_WORK_DIR` are exported; omit
+it to export all of them. It governs the whole `LINEAR_` namespace, not just
+those seven: any other `LINEAR_*` variable in ltui's own environment — most
+importantly `LINEAR_API_KEY` — is withheld from your script unless you name it
+in the list, so handing it your credentials is a deliberate act rather than an
+accident. The rest of your environment is inherited as usual, and
+`LINEAR_TOOL_COMMAND=ltui` is always set, so a shared script can tell the TUI
+apart from the desktop app.
+
+`LINEAR_PROMPT` is rendered from `~/.linear/prompt-template.txt` if present —
+the equivalent of Linear's **Prompt template** setting — falling back to
+`{{context}}` (the ticket's title and description). For example:
+
+```
+Read Linear issue {{issue.identifier}} and await further instructions.
+
+{{context}}
+```
+
+The script is detached from the TUI's terminal, so it will not fight ltui for
+the tty; have it log somewhere or open a window of its own.
 
 key names are [Textual key names](https://textual.textualize.io/guide/input/#key)
 (`slash`, `comma`, `question_mark`, `ctrl+x`, …). unknown or invalid entries

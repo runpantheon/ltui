@@ -79,6 +79,7 @@ launch ──▶ render cached board (~50ms) ──▶ you're already working
 | 🏷️  | **label editing** — `l` opens a multi-select editor over your tracker's labels |
 | 👥  | **assign without leaving** — `a` reassigns to anyone on the team, or you, or nobody |
 | 🌿  | **`y` yanks a git branch** — ticket → `git checkout -b` in seconds |
+| 🚀  | **`x` runs your own script** — hand the ticket to a coding agent or any tool, reusing Linear's `coding-tools.json` hook |
 | 🌳  | **hierarchy aware** — parent tickets, sub-issues/subtasks with done-counts, and blocked/blocking badges with the exact tickets named |
 | 📖  | **rich detail panel** — full markdown descriptions, labels, comments — scrolls with arrows, vim keys, or mouse |
 | ✏️  | **write, don't just read** — create tickets, change status & priority, comment, all from the keyboard |
