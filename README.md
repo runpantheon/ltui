@@ -81,8 +81,9 @@ launch ──▶ render cached board (~50ms) ──▶ you're already working
 | 🌿  | **`y` yanks a git branch** — ticket → `git checkout -b` in seconds |
 | 🚀  | **`x` runs your own script** — hand the ticket to a coding agent or any tool, reusing Linear's `coding-tools.json` hook |
 | 🌳  | **hierarchy aware** — parent tickets, sub-issues/subtasks with done-counts, and blocked/blocking badges with the exact tickets named |
+| 📅  | **due dates in the board** — upcoming dates stay visible, overdue work turns red, and `d` sets or clears a date inline |
 | 📖  | **rich detail panel** — full markdown descriptions, labels, comments — scrolls with arrows, vim keys, or mouse |
-| ✏️  | **write, don't just read** — create tickets, change status & priority, comment, all from the keyboard |
+| ✏️  | **write, don't just read** — create tickets, change status, priority & due date, comment, all from the keyboard |
 | 🔍  | **instant filter** — `/` narrows by title, identifier, or assignee as you type |
 | 🌚  | **five themes** — `mocha`, OLED-black `void`, monochrome `onyx`, `clear` (no background — your terminal's transparency shows through), and `system` (your terminal's own ANSI palette) — with live preview as you scroll the picker |
 | 🎛️  | **fully remappable** — every key rebindable via `config.json` (`--init-config`), vim motion layer (`ctrl+d/u`, `[`/`]` group jumps, `:` palette) out of the box |
