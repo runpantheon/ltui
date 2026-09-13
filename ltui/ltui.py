@@ -10,7 +10,7 @@ WITHOUT ANY WARRANTY. Commercial licenses are available from Pantheon
 
 from __future__ import annotations
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 import asyncio
 import json
@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tomllib
 import webbrowser
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -224,7 +224,7 @@ ALL_TEAMS = {"id": ALL_TEAMS_ID, "key": "ALL", "name": "all teams", "color": Non
 
 # ── graphql ───────────────────────────────────────────────────────────────
 ISSUE_FIELDS = """
-        id identifier title description url priority branchName
+        id identifier title description url priority branchName dueDate
         updatedAt createdAt
         state { id name color type position }
         assignee { id displayName }
@@ -316,6 +316,14 @@ mutation($id: String!, $p: Int!) {
   issueUpdate(id: $id, input: {priority: $p}) { success }
 }"""
 
+M_DUE_DATE = """
+mutation($id: String!, $dueDate: TimelessDate) {
+  issueUpdate(id: $id, input: {dueDate: $dueDate}) {
+    success
+    issue { id dueDate }
+  }
+}"""
+
 QL_TEAM_LABELS = """
 query($teamId: String!) {
   team(id: $teamId) { labels(first: 100) { nodes { id name color } } }
@@ -386,6 +394,7 @@ DEFAULT_KEYBINDS = {
     "quit": (["q"], "quit"),
     "refresh": (["r"], None),
     "change_priority": (["p"], None),
+    "change_due_date": (["d"], None),
     "edit_labels": (["l"], None),
     "move_project": (["P"], None),
     "change_assignee": (["a"], None),
@@ -445,6 +454,7 @@ CONFIG_TEMPLATE = """{
     "quit": "q",
     "refresh": "r",
     "change_priority": "p",
+    "change_due_date": "d",
     "edit_labels": "l",
     "move_project": "P",
     "change_assignee": "a",
@@ -570,6 +580,41 @@ def block_info(issue: dict) -> tuple[list[str], list[str]]:
 
 def priority_name(p: int) -> str:
     return dict((n, lbl) for n, lbl in PRIORITIES).get(p, "No priority")
+
+
+def due_date_style(issue: dict, today: date | None = None) -> str:
+    """Color a timeless due date without converting it through a timezone."""
+    due = issue.get("dueDate")
+    if not due:
+        return C_DIM
+    if issue.get("state", {}).get("type") in {"completed", "canceled", "duplicate"}:
+        return C_DIM
+    due_day = date.fromisoformat(due)
+    today = today or date.today()
+    if due_day < today:
+        return C_RED
+    if due_day == today:
+        return C_PEACH
+    return C_BLUE
+
+
+def due_date_label(due: str, today: date | None = None) -> str:
+    """Human-readable detail label for Linear's YYYY-MM-DD date scalar."""
+    due_day = date.fromisoformat(due)
+    today = today or date.today()
+    if due_day == today:
+        return "today"
+    if due_day == today + timedelta(days=1):
+        return "tomorrow"
+    label = due_day.strftime("%b %d")
+    if due_day.year != today.year:
+        label += f", {due_day.year}"
+    return label
+
+
+def due_date_cell(due: str) -> str:
+    due_day = date.fromisoformat(due)
+    return f"\uf133{due_day.month}/{due_day.day}"
 
 
 def state_sort_key(s: dict):
@@ -835,6 +880,82 @@ class PickerModal(ModalScreen):
     @on(OptionList.OptionSelected)
     def _selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class DueDateModal(ModalScreen):
+    """Date-only editor; an empty submitted value means remove the due date."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("ctrl+s", "submit", show=False),
+    ]
+
+    def __init__(self, identifier: str, current: str | None) -> None:
+        super().__init__()
+        self._identifier = identifier
+        self._current = current or ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="duedate-box"):
+            yield Static(f"due date · {self._identifier}", id="duedate-title")
+            yield Input(
+                value=self._current,
+                placeholder="YYYY-MM-DD",
+                id="duedate-input",
+            )
+            with Horizontal(id="duedate-presets"):
+                yield Button("today", id="duedate-today")
+                yield Button("tomorrow", id="duedate-tomorrow")
+                yield Button("+1 week", id="duedate-week")
+            with Horizontal(id="duedate-actions"):
+                yield Static(
+                    f"[{C_DIM}]enter to save · esc to cancel[/]", id="duedate-hint"
+                )
+                yield Button("clear", id="duedate-clear")
+                yield Button("set date", variant="primary", id="duedate-save")
+
+    def on_mount(self) -> None:
+        pop_in(self.query_one("#duedate-box"))
+        field = self.query_one("#duedate-input", Input)
+        field.focus()
+        field.cursor_position = len(field.value)
+
+    @on(Input.Submitted, "#duedate-input")
+    @on(Button.Pressed, "#duedate-save")
+    def _submit(self) -> None:
+        self.action_submit()
+
+    @on(Button.Pressed, "#duedate-clear")
+    def _clear(self) -> None:
+        self.dismiss("")
+
+    @on(Button.Pressed, "#duedate-today")
+    def _today(self) -> None:
+        self.dismiss(date.today().isoformat())
+
+    @on(Button.Pressed, "#duedate-tomorrow")
+    def _tomorrow(self) -> None:
+        self.dismiss((date.today() + timedelta(days=1)).isoformat())
+
+    @on(Button.Pressed, "#duedate-week")
+    def _week(self) -> None:
+        self.dismiss((date.today() + timedelta(days=7)).isoformat())
+
+    def action_submit(self) -> None:
+        value = self.query_one("#duedate-input", Input).value.strip()
+        if not value:
+            self.dismiss("")
+            return
+        try:
+            normalized = date.fromisoformat(value).isoformat()
+        except ValueError:
+            self.app.notify("use a date like 2026-09-30", severity="warning")
+            self.query_one("#duedate-input", Input).focus()
+            return
+        self.dismiss(normalized)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1238,6 +1359,7 @@ class HelpModal(ModalScreen):
             ("n", "new ticket in the current team"),
             ("s", "change status"),
             ("p", "change priority"),
+            ("d", "set or clear due date"),
             ("l", "edit labels"),
             ("P", "move to a project (or create one)"),
             ("a", "change assignee (or unassign)"),
@@ -1343,6 +1465,7 @@ def hint_markup() -> str:
     return (
         f"[@click=app.change_status][{C_BLUE}]s[/] [{C_DIM}]status[/][/]  "
         f"[@click=app.change_priority][{C_BLUE}]p[/] [{C_DIM}]priority[/][/]  "
+        f"[@click=app.change_due_date][{C_BLUE}]d[/] [{C_DIM}]due[/][/]  "
         f"[@click=app.add_comment][{C_BLUE}]c[/] [{C_DIM}]comment[/][/]  "
         f"[@click=app.open_browser][{C_BLUE}]o[/] [{C_DIM}]browser[/][/]  "
         f"[@click=app.yank][{C_BLUE}]y[/] [{C_DIM}]yank[/][/]  "
@@ -1434,6 +1557,20 @@ class LTUI(App):
     }}
     #picker-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
     #picker-list {{ height: auto; max-height: 14; }}
+
+    DueDateModal {{ align: center middle; background: $ltui-overlay; }}
+    #duedate-box {{
+        width: 56; height: auto;
+        background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
+    }}
+    #duedate-title {{ color: {C_SUB}; text-style: bold; padding: 0 0 1 0; }}
+    #duedate-input {{ border: round {C_VFAINT}; background: transparent; }}
+    #duedate-input:focus {{ border: round {C_FAINT}; }}
+    #duedate-presets {{ height: 3; margin: 1 0 0 0; }}
+    #duedate-presets Button {{ width: 1fr; margin: 0 1 0 0; }}
+    #duedate-actions {{ height: 3; margin: 1 0 0 0; }}
+    #duedate-hint {{ width: 1fr; padding: 1 0; }}
+    #duedate-actions Button {{ margin: 0 0 0 1; min-width: 9; }}
 
     CommentModal {{ align: center middle; background: $ltui-overlay; }}
     LabelsModal {{ align: center middle; background: $ltui-overlay; }}
@@ -2200,6 +2337,23 @@ class LTUI(App):
         self.notify(f" {issue['identifier']} → {priority_name(p)}")
 
     @work(group="mutate")
+    async def apply_due_date(self, issue: dict, due_date: str | None) -> None:
+        try:
+            data = await self.gql(
+                M_DUE_DATE, {"id": issue["id"], "dueDate": due_date}
+            )
+            issue["dueDate"] = data["issueUpdate"]["issue"]["dueDate"]
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self._update_detail_meta(issue)
+        label = due_date_label(due_date) if due_date else "no due date"
+        self.notify(f"\uf133 {issue['identifier']} → {label}")
+
+    @work(group="mutate")
     async def apply_assignee(self, issue: dict, assignee_id: str | None) -> None:
         try:
             data = await self.gql(
@@ -2456,7 +2610,8 @@ class LTUI(App):
 
         assignee = (issue.get("assignee") or {}).get("displayName") or ""
         assignee = assignee.split()[0][:10] if assignee else "—"
-        time_s = rel_time(issue["updatedAt"])
+        due = issue.get("dueDate")
+        time_s = due_date_cell(due) if due else rel_time(issue["updatedAt"])
         labels = issue["labels"]["nodes"][:3]
         blocked_by, blocks = block_info(issue)
         badges = []
@@ -2465,7 +2620,7 @@ class LTUI(App):
         if blocks:
             badges.append((" \uf06a", C_PEACH))  # blocking something
 
-        right_w = 3 + 2 + 10 + 2 + 4  # prio, gap, assignee, gap, time
+        right_w = 3 + 2 + 10 + 2 + 6  # prio, gap, assignee, gap, date/time
         title_w = width - 2 - id_w - 1 - right_w - 1
         dots_w = len(labels) * 2 + len(badges) * 2
         title = issue["title"]
@@ -2487,7 +2642,7 @@ class LTUI(App):
         style = C_SUB if assignee != "—" else C_VFAINT
         t.append(assignee.ljust(10), style=style)
         t.append("  ")
-        t.append(time_s.rjust(4), style=C_DIM)
+        t.append(time_s.rjust(6), style=due_date_style(issue) if due else C_DIM)
         return t
 
     # ── detail panel ──────────────────────────────────────────────────
@@ -2533,6 +2688,11 @@ class LTUI(App):
             m.append("   ")
             m.append("\uf07b ", style=project.get("color") or C_DIM)
             m.append(project["name"], style=C_SUB)
+        due = issue.get("dueDate")
+        if due:
+            m.append("   ")
+            m.append("\uf133 ", style=due_date_style(issue))
+            m.append(f"due {due_date_label(due)}", style=due_date_style(issue))
         labels = issue["labels"]["nodes"]
         if labels:
             m.append("\n")
@@ -3002,6 +3162,22 @@ class LTUI(App):
 
         self.push_screen(PickerModal(f"priority · {issue['identifier']}", opts), done)
 
+    def action_change_due_date(self) -> None:
+        issue = self._current_issue()
+        if not issue:
+            return
+        current = issue.get("dueDate")
+
+        def done(due_date: str | None) -> None:
+            # None means the modal was canceled; an empty string means clear.
+            if due_date is None:
+                return
+            new_date = due_date or None
+            if new_date != current:
+                self.apply_due_date(issue, new_date)
+
+        self.push_screen(DueDateModal(issue["identifier"], current), done)
+
     def action_change_assignee(self) -> None:
         issue = self._current_issue()
         if not issue or self._team is None:
@@ -3206,7 +3382,8 @@ config: ~/.config/ltui/config.json remaps any keybind and sets options
 auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
       linear-cli's config. no key? ltui asks on first launch.
 
-keys: enter open ticket   n new   s status   p priority   c comment
+keys: enter open ticket   n new   s status   p priority   d due date
+      c comment
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
       m mine only   v group status/project/initiative

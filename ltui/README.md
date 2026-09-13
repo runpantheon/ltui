@@ -57,8 +57,9 @@ launch. ltui doesn't:
 | 👥  | **assign without leaving** — `a` reassigns to anyone on the team, or you, or nobody |
 | 🌳  | **hierarchy aware** — the detail panel shows the parent ticket and all sub-issues with a done-count, next to blocked/blocking relations |
 | 🔄  | **never stale** — the board silently re-syncs every 3 minutes |
+| 📅  | **due dates in the board** — upcoming dates stay visible, overdue work turns red, and `d` sets or clears a date inline |
 | 📖  | **rich detail panel** — full markdown descriptions (code blocks, checklists, quotes), labels, comments — scrolls with arrows, vim keys, or mouse wheel |
-| ✏️  | **write, don't just read** — create tickets, change status & priority, add comments without leaving the terminal |
+| ✏️  | **write, don't just read** — create tickets, change status, priority & due date, and add comments without leaving the terminal |
 | 🚧  | **blocked & blocking at a glance** — a red badge on tickets that are blocked, an orange one on tickets holding others up; the detail panel names the exact tickets |
 | 🔍  | **instant filter** — `/` fuzzy-narrows by title, identifier, or assignee as you type |
 | 🌚  | **five themes** — `mocha`, pure-black `void`, monochrome `onyx`, `clear` (no background — your terminal's transparency/blur shows through), and `system` (drawn in your terminal's own ANSI palette: your kitty theme *is* the ltui theme) — cycle with `t` |
@@ -150,6 +151,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `n`      | **new ticket** in the current team (pick a team first on the all-teams board) |
 | `s`      | change **status**                             |
 | `p`      | change **priority**                           |
+| `d`      | set or clear the **due date**                 |
 | `a`      | change **assignee** (or unassign)             |
 | `l`      | edit **labels** (multi-select)                |
 | `P`      | move to a **project** — or create one inline  |
@@ -230,6 +232,7 @@ ltui --init-config    # writes ~/.config/ltui/config.json
 {
   "keybinds": {
     "new_ticket": "n",            // any action -> any key
+    "change_due_date": "d",
     "yank": ["y", "ctrl+y"]       // or several keys
   },
   "options": {
@@ -360,7 +363,7 @@ launch ──▶ render cached issues (~50ms) ──▶ you're already working
 
 - issue lists cache to `~/.cache/ltui/` per team — the all-teams board is
   assembled from those same per-team files, so it renders instantly too
-- mutations (status, priority, new tickets) update the cache immediately —
+- mutations (status, priority, due date, new tickets) update the cache immediately —
   what you see is always what you did
 - the `↻ refreshing` badge in the border tells you when fresh data is inbound
 - the board silently re-syncs every 3 minutes, so it never goes stale
