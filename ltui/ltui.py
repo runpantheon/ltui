@@ -10,7 +10,7 @@ WITHOUT ANY WARRANTY. Commercial licenses are available from Pantheon
 
 from __future__ import annotations
 
-__version__ = "0.16.0"
+__version__ = "0.16.1"
 
 import asyncio
 import json
@@ -215,6 +215,11 @@ INITIATIVE_RANK = {
 }
 
 GROUP_MODES = ["status", "project", "initiative"]
+
+# the due-date column takes 8 columns off the title. Below this list width —
+# roughly a half-screen list with the detail panel open — the title has none to
+# spare, so the column steps aside and the detail panel carries the date.
+DUE_COL_MIN_WIDTH = 60
 
 # the "every team at once" board. A pseudo-team so the sidebar, the state file
 # and the staleness guards can all keep treating the scope as one selectable
@@ -1560,14 +1565,17 @@ class LTUI(App):
 
     DueDateModal {{ align: center middle; background: $ltui-overlay; }}
     #duedate-box {{
-        width: 56; height: auto;
+        width: 60; max-width: 90%; height: auto;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #duedate-title {{ color: {C_SUB}; text-style: bold; padding: 0 0 1 0; }}
     #duedate-input {{ border: round {C_VFAINT}; background: transparent; }}
     #duedate-input:focus {{ border: round {C_FAINT}; }}
     #duedate-presets {{ height: 3; margin: 1 0 0 0; }}
-    #duedate-presets Button {{ width: 1fr; margin: 0 1 0 0; }}
+    /* a Button's default min-width is wider than a third of the box, and an fr
+       child that cannot shrink to its share takes the whole row instead — which
+       pushed tomorrow and +1 week past the edge, where they were clipped */
+    #duedate-presets Button {{ width: 1fr; min-width: 0; margin: 0 1 0 0; }}
     #duedate-actions {{ height: 3; margin: 1 0 0 0; }}
     #duedate-hint {{ width: 1fr; padding: 1 0; }}
     #duedate-actions Button {{ margin: 0 0 0 1; min-width: 9; }}
@@ -2507,6 +2515,10 @@ class LTUI(App):
             ]
 
         id_w = max((len(i["identifier"]) for i in issues), default=6)
+        # a column every row leaves blank is not worth its width
+        show_due = width >= DUE_COL_MIN_WIDTH and any(
+            i.get("dueDate") for i in issues
+        )
         ol.clear_options()
         self._opt_index = {}
         self._header_indices = []
@@ -2520,7 +2532,9 @@ class LTUI(App):
             opts.append(Option(header, disabled=True))
             for i in group:
                 self._opt_index[i["id"]] = len(opts)
-                opts.append(Option(self._issue_row(i, width, id_w), id=i["id"]))
+                opts.append(
+                    Option(self._issue_row(i, width, id_w, show_due), id=i["id"])
+                )
         if not opts:
             msg = "no matches" if flt else "no issues"
             opts.append(Option(Text(f"  {msg}", style=C_DIM), disabled=True))
@@ -2601,7 +2615,17 @@ class LTUI(App):
             return C_DIM
         return (self._team_of(issue) or {}).get("color") or C_DIM
 
-    def _issue_row(self, issue: dict, width: int, id_w: int) -> Text:
+    def _issue_row(
+        self, issue: dict, width: int, id_w: int, show_due: bool = False
+    ) -> Text:
+        """One issue line. `show_due` adds a due-date column after `updated`.
+
+        The due date is its own column rather than a replacement for the
+        relative update time — both answer different questions, and a row that
+        swapped one for the other read as a stale `updated` value. The column
+        is only reserved when the board actually has a due date to show, so a
+        team that does not use them loses no title width.
+        """
         st = issue["state"]
         t = Text(no_wrap=True, overflow="ellipsis")
         t.append(f"{state_icon(st)} ", style=st["color"] or C_SUB)
@@ -2611,7 +2635,7 @@ class LTUI(App):
         assignee = (issue.get("assignee") or {}).get("displayName") or ""
         assignee = assignee.split()[0][:10] if assignee else "—"
         due = issue.get("dueDate")
-        time_s = due_date_cell(due) if due else rel_time(issue["updatedAt"])
+        time_s = rel_time(issue["updatedAt"])
         labels = issue["labels"]["nodes"][:3]
         blocked_by, blocks = block_info(issue)
         badges = []
@@ -2620,7 +2644,9 @@ class LTUI(App):
         if blocks:
             badges.append((" \uf06a", C_PEACH))  # blocking something
 
-        right_w = 3 + 2 + 10 + 2 + 6  # prio, gap, assignee, gap, date/time
+        right_w = 3 + 2 + 10 + 2 + 4  # prio, gap, assignee, gap, updated
+        if show_due:
+            right_w += 2 + 6  # gap, due date
         title_w = width - 2 - id_w - 1 - right_w - 1
         dots_w = len(labels) * 2 + len(badges) * 2
         title = issue["title"]
@@ -2642,7 +2668,12 @@ class LTUI(App):
         style = C_SUB if assignee != "—" else C_VFAINT
         t.append(assignee.ljust(10), style=style)
         t.append("  ")
-        t.append(time_s.rjust(6), style=due_date_style(issue) if due else C_DIM)
+        t.append(time_s.rjust(4), style=C_DIM)
+        if show_due:
+            t.append("  ")
+            # blank keeps the column aligned for issues without a due date
+            cell = due_date_cell(due) if due else ""
+            t.append(cell.rjust(6), style=due_date_style(issue))
         return t
 
     # ── detail panel ──────────────────────────────────────────────────
