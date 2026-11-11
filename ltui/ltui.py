@@ -3513,6 +3513,7 @@ keys: enter open ticket   n new   s status   p priority   d due date
       x run ~/.linear/coding-tools.json custom script on the ticket
       m mine only   v group status/project/initiative
       V one project   t theme
+      h show/hide hidden statuses   H choose statuses to hide
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 
