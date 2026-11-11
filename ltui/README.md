@@ -158,7 +158,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `c`      | add a **comment** (`ctrl+s` to send)          |
 | `o`      | open ticket in **browser**                    |
 | `y`      | **yank** — copy branch name / url / id        |
-| `x`      | **run your custom script** on the ticket      |
+| `x`      | **run your custom script** on the ticket — [add more](#more-scripts) |
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
 | `v`      | cycle grouping: **status → project → initiative** |
@@ -286,6 +286,42 @@ Read Linear issue {{issue.identifier}} and await further instructions.
 
 The script is detached from the TUI's terminal, so it will not fight ltui for
 the tty; have it log somewhere or open a window of its own.
+
+### more scripts
+
+`x` only covers the one script Linear's desktop app knows about. For more, add
+a `scripts` list to `~/.config/ltui/config.json`. Each entry takes the same
+`path` / `args` / `env` as above (same placeholders, same `LINEAR_*` rules),
+plus:
+
+- `key`: a key, or a list of keys, that runs it. Optional.
+- `name`: its title in the command palette (`:` / `ctrl+p`). Defaults to the
+  script's file name.
+- `description`: shown under the name in the palette, and next to the key in
+  the `?` overlay (which falls back to `name`).
+
+```jsonc
+{
+  "scripts": [
+    {
+      "key": "X",
+      "name": "Claude on ticket",
+      "description": "open a worktree and start Claude on the ticket",
+      "path": "~/bin/claude-on-ticket",
+      "args": ["{{issue.branchName}}"]
+    },
+    {
+      "name": "Draft PR",            // no key: palette only
+      "path": "~/bin/draft-pr",
+      "env": ["LINEAR_ISSUE_IDENTIFIER", "LINEAR_ISSUE_URL"]
+    }
+  ]
+}
+```
+
+Every script, including `x`'s, appears in the command palette. Built-in keys
+win: if a script's `key` is already bound (remap the built-in first under
+`keybinds`), ltui skips that key and warns at startup.
 
 key names are [Textual key names](https://textual.textualize.io/guide/input/#key)
 (`slash`, `comma`, `question_mark`, `ctrl+x`, …). unknown or invalid entries
