@@ -2471,8 +2471,12 @@ class LTUI(App):
 
         def in_group_key(i: dict):
             # inside a project / initiative keep the status order, then
-            # mine-first + recency
-            return (state_sort_key(i["state"]), *mine_first(i))
+            # mine-first + recency. Sorting by priority puts priority ahead of
+            # status, otherwise it would only reorder tickets sharing a status
+            key = (state_sort_key(i["state"]), *mine_first(i))
+            if self._sort_by == "priority":
+                return (priority_rank(i.get("priority")), *key)
+            return key
 
         if self._group_by == "project":
             by_proj: dict[str, list[dict]] = {}
