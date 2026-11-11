@@ -561,7 +561,8 @@ def state_icon(state: dict) -> str:
 def priority_cell(p: int) -> Text:
     t = Text()
     if p == 1:
-        t.append(" ", style=f"bold {C_PEACH}")
+        # nf-md-alert_box: Linear's urgent mark, a filled square with a "!"
+        t.append("\U000f0027", style=f"bold {C_PEACH}")
         t.append("  ")
     elif p in (2, 3, 4):
         lit = {2: 3, 3: 2, 4: 1}[p]
