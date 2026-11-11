@@ -3449,7 +3449,7 @@ keys: enter open ticket   n new   s status   p priority   d due date
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
       m mine only   v group status/project/initiative
-      V one project   t theme
+      V one project   S sort recent/priority   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 
