@@ -392,6 +392,8 @@ DEFAULT_KEYBINDS = {
     "filter": (["slash"], "filter"),
     "toggle_mine": (["m"], "mine"),
     "toggle_group": (["v"], "group"),
+    "toggle_hidden": (["h"], None),
+    "pick_hidden_states": (["H"], None),
     "pick_project": (["V"], None),
     "cycle_theme": (["t"], "theme"),
     "open_settings": (["comma"], None),
@@ -452,6 +454,8 @@ CONFIG_TEMPLATE = """{
     "filter": "slash",
     "toggle_mine": "m",
     "toggle_group": "v",
+    "toggle_hidden": "h",
+    "pick_hidden_states": "H",
     "pick_project": "V",
     "cycle_theme": "t",
     "open_settings": "comma",
@@ -631,6 +635,13 @@ def state_sort_key(s: dict):
 def issue_sort_key(i: dict):
     # most recently updated first within each status group
     return (-parse_dt(i["updatedAt"]).timestamp(),)
+
+
+def hide_state(issue: dict, hidden: set[str]) -> bool:
+    """Whether an issue's status is one the user chose to hide. Statuses are
+    matched by name, case-insensitively: workflow states are team-scoped, so
+    a name is what lets one choice cover every team's "Duplicate"."""
+    return ((issue.get("state") or {}).get("name") or "").lower() in hidden
 
 
 def initiative_sort_key(init: dict):
@@ -1318,6 +1329,15 @@ class SettingsModal(ModalScreen):
         row.append("● " if mine else "○ ", style=C_GREEN if mine else C_DIM)
         row.append("mine only", style=C_TEXT if mine else C_SUB)
         opts.append(Option(row, id="pref:mine"))
+        hidden = getattr(app, "_hidden_states", set())
+        hide_on = bool(hidden) and getattr(app, "_hide_on", True)
+        row = Text("   ")
+        row.append("● " if hide_on else "○ ", style=C_GREEN if hide_on else C_DIM)
+        row.append("hide statuses", style=C_TEXT if hide_on else C_SUB)
+        if hidden:
+            row.append(f"  {', '.join(sorted(hidden))}", style=C_DIM)
+        opts.append(Option(row, id="pref:hide"))
+        opts.append(Option(Text("    choose hidden statuses…", style=C_SUB), id="pref:hide-pick"))
         opts.append(Option(Text(" "), disabled=True))
         opts.append(Option(Text(" maintenance", style=f"bold {C_SUB}"), disabled=True))
         opts.append(Option(Text("    clear cache", style=C_SUB), id="cache:clear"))
@@ -1330,6 +1350,12 @@ class SettingsModal(ModalScreen):
         oid = event.option.id or ""
         if oid == "pref:mine":
             app.action_toggle_mine()
+        elif oid == "pref:hide":
+            app.action_toggle_hidden()
+        elif oid == "pref:hide-pick":
+            self.dismiss(None)
+            app.action_pick_hidden_states()
+            return
         elif oid == "cache:clear":
             count = clear_cache()
             app.notify(f" cleared {count} cached file(s)")
@@ -1377,6 +1403,8 @@ class HelpModal(ModalScreen):
             ("/", "filter issues"),
             ("m", "toggle mine only"),
             ("v", "group by status / project / initiative"),
+            ("h", "show / hide hidden statuses"),
+            ("H", "choose statuses to hide"),
             ("V", "filter to a single project"),
             ("t", "cycle theme"),
             (",", "settings"),
@@ -1697,6 +1725,13 @@ class LTUI(App):
         self._group_by = load_state().get("group_by", "status")
         if self._group_by not in GROUP_MODES:
             self._group_by = "status"
+        saved = load_state()
+        # lower-cased status names; _hide_on lets h show them again without
+        # forgetting the choice
+        self._hidden_states: set[str] = {
+            n.lower() for n in saved.get("hidden_states", []) if isinstance(n, str)
+        }
+        self._hide_on: bool = saved.get("hide_states", True) is not False
         self._filter = ""
         self._project_filter: str | None = None  # project id, "" = no-project
         self._detail_issue: dict | None = None
@@ -1968,6 +2003,8 @@ class LTUI(App):
         data["mine"] = self._mine
         data["theme"] = self.theme
         data["group_by"] = self._group_by
+        data["hidden_states"] = sorted(self._hidden_states)
+        data["hide_states"] = self._hide_on
         save_state(data)
 
     @property
@@ -2421,6 +2458,11 @@ class LTUI(App):
         width = max(ol.content_size.width - 2, 40)
         flt = self._filter.lower()
         issues = self._issues
+        hidden_count = 0
+        if self._hide_on and self._hidden_states:
+            kept = [i for i in issues if not hide_state(i, self._hidden_states)]
+            hidden_count = len(issues) - len(kept)
+            issues = kept
         if self._mine and self._viewer_id:
             issues = [
                 i
@@ -2556,8 +2598,15 @@ class LTUI(App):
         group_tag = (
             f" \uf0ca {self._group_by} \u00b7" if self._group_by != "status" else ""
         )
+        # say when tickets are being held back, and when the hiding is paused
+        hide_tag = ""
+        if self._hidden_states:
+            hide_tag = (
+                f" \uf070 {hidden_count} hidden \u00b7" if self._hide_on
+                else " \uf06e showing hidden \u00b7"
+            )
         self.query_one("#centre").border_subtitle = (
-            f"{mine_tag}{proj_tag}{group_tag} {len(issues)} issues "
+            f"{mine_tag}{proj_tag}{group_tag}{hide_tag} {len(issues)} issues "
         )
         if keep and keep in self._opt_index:
             ol.highlighted = self._opt_index[keep]
@@ -2978,6 +3027,50 @@ class LTUI(App):
             self.load_initiatives(rerender=True)
         self.render_issues()
         self.notify(f"\uf0ca grouping by {self._group_by}")
+
+    def action_toggle_hidden(self) -> None:
+        if not self._hidden_states:
+            self.notify("no statuses hidden yet \u2014 press H to pick some")
+            return
+        self._hide_on = not self._hide_on
+        self._save_state()
+        self.render_issues()
+        self.notify(
+            "\uf070 hiding statuses" if self._hide_on else "\uf06e showing hidden statuses"
+        )
+
+    def action_pick_hidden_states(self) -> None:
+        # one row per status name on this board, in board order; names hidden
+        # elsewhere but absent here are kept through the edit untouched
+        seen: dict[str, dict] = {}
+        for st in sorted(self._states or [], key=state_sort_key):
+            key = (st.get("name") or "").lower()
+            if key and key not in seen:
+                seen[key] = {"id": key, "name": st["name"], "color": st.get("color")}
+        if not seen:
+            self.notify("no statuses loaded yet", severity="warning")
+            return
+        elsewhere = self._hidden_states - seen.keys()
+
+        def done(sel: list[str] | None) -> None:
+            if sel is None:
+                return
+            self._hidden_states = set(sel) | elsewhere
+            # choosing what to hide means wanting it hidden
+            self._hide_on = True
+            self._save_state()
+            self.render_issues()
+            n = len(self._hidden_states)
+            self.notify(f"\uf070 hiding {n} status{'es' if n != 1 else ''}")
+
+        self.push_screen(
+            LabelsModal(
+                "hide statuses",
+                list(seen.values()),
+                self._hidden_states & seen.keys(),
+            ),
+            done,
+        )
 
     def action_toggle_mine(self) -> None:
         self._mine = not self._mine
