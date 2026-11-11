@@ -1335,7 +1335,8 @@ class SettingsModal(ModalScreen):
         row.append("● " if hide_on else "○ ", style=C_GREEN if hide_on else C_DIM)
         row.append("hide statuses", style=C_TEXT if hide_on else C_SUB)
         if hidden:
-            row.append(f"  {', '.join(sorted(hidden))}", style=C_DIM)
+            # a count, not the names: a list of names wraps the modal
+            row.append(f"  {len(hidden)}", style=C_DIM)
         opts.append(Option(row, id="pref:hide"))
         opts.append(Option(Text("    choose hidden statuses…", style=C_SUB), id="pref:hide-pick"))
         opts.append(Option(Text(" "), disabled=True))
