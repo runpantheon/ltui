@@ -10,7 +10,7 @@ WITHOUT ANY WARRANTY. Commercial licenses are available from Pantheon
 
 from __future__ import annotations
 
-__version__ = "0.16.1"
+__version__ = "0.17.0"
 
 import asyncio
 import json
@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tomllib
 import webbrowser
+from functools import partial
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,10 +28,12 @@ import httpx
 from rich.markup import escape
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.color import Color as TColor
+from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.keys import format_key
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Footer, Input, Markdown, OptionList, Static, TextArea
@@ -215,6 +218,8 @@ INITIATIVE_RANK = {
 }
 
 GROUP_MODES = ["status", "project", "initiative"]
+# order of tickets inside a group: freshest first, or most urgent first
+SORT_MODES = ["recent", "priority"]
 
 # the due-date column takes 8 columns off the title. Below this list width —
 # roughly a half-screen list with the detail panel open — the title has none to
@@ -248,15 +253,70 @@ query {
   teams(first: 50) { nodes { id name key color } }
 }"""
 
-QL_ISSUES = f"""
-query($teamId: String!) {{
+# a team's board is every open ticket plus the most recently updated closed
+# ones. One updatedAt-ordered window for both let busy teams push untouched
+# open tickets out behind a run of recently closed ones.
+CLOSED_TYPES = ["completed", "canceled", "duplicate"]
+PAGE_SIZE = 250  # Linear's maximum page size
+CLOSED_LIMIT = 50  # enough for the Done group to show recent work
+MAX_OPEN_ISSUES = 2000  # runaway guard: ~8 sequential pages per team
+
+QL_OPEN_ISSUES = f"""
+query($teamId: String!, $after: String) {{
   team(id: $teamId) {{
-    issues(first: 250, orderBy: updatedAt) {{
+    issues(
+      first: {PAGE_SIZE}, after: $after, orderBy: updatedAt,
+      filter: {{ state: {{ type: {{ nin: {json.dumps(CLOSED_TYPES)} }} }} }}
+    ) {{
       nodes {{ {ISSUE_FIELDS} }}
+      pageInfo {{ hasNextPage endCursor }}
     }}
     states {{ nodes {{ id name color type position }} }}
   }}
 }}"""
+
+QL_CLOSED_ISSUES = f"""
+query($teamId: String!) {{
+  team(id: $teamId) {{
+    issues(
+      first: {CLOSED_LIMIT}, orderBy: updatedAt,
+      filter: {{ state: {{ type: {{ in: {json.dumps(CLOSED_TYPES)} }} }} }}
+    ) {{
+      nodes {{ {ISSUE_FIELDS} }}
+    }}
+  }}
+}}"""
+
+
+async def fetch_team_issues(gql, team_id: str) -> tuple[list[dict], list[dict], bool]:
+    """A team's board: (issues, workflow states, truncated).
+
+    Pages through every open issue (up to MAX_OPEN_ISSUES) and adds the
+    CLOSED_LIMIT most recently updated closed ones. `truncated` is True when
+    the open issues ran past MAX_OPEN_ISSUES. The first open page and the
+    closed issues are fetched concurrently; later pages follow the cursor.
+    """
+    first, closed = await asyncio.gather(
+        gql(QL_OPEN_ISSUES, {"teamId": team_id}),
+        gql(QL_CLOSED_ISSUES, {"teamId": team_id}),
+    )
+    team = first.get("team")
+    if not team:
+        raise RuntimeError("team not found")
+    issues = list(team["issues"]["nodes"])
+    page = team["issues"].get("pageInfo") or {}
+    truncated = False
+    while page.get("hasNextPage") and page.get("endCursor"):
+        if len(issues) >= MAX_OPEN_ISSUES:
+            truncated = True
+            break
+        data = await gql(QL_OPEN_ISSUES, {"teamId": team_id, "after": page["endCursor"]})
+        issues += data["team"]["issues"]["nodes"]
+        page = data["team"]["issues"].get("pageInfo") or {}
+    issues += ((closed.get("team") or {}).get("issues") or {}).get("nodes", [])
+    # a ticket closed between the two queries could come back from both
+    unique = list({i["id"]: i for i in issues}.values())
+    return unique, team["states"]["nodes"], truncated
 
 M_CREATE = f"""
 mutation($teamId: String!, $title: String!, $desc: String) {{
@@ -392,6 +452,7 @@ DEFAULT_KEYBINDS = {
     "filter": (["slash"], "filter"),
     "toggle_mine": (["m"], "mine"),
     "toggle_group": (["v"], "group"),
+    "toggle_sort": (["S"], None),
     "toggle_hidden": (["h"], None),
     "pick_hidden_states": (["H"], None),
     "pick_project": (["V"], None),
@@ -411,29 +472,107 @@ DEFAULT_KEYBINDS = {
     # vim layer (additive)
     "next_group": (["right_square_bracket"], None),
     "prev_group": (["left_square_bracket"], None),
-    "command_palette": (["colon"], None),
+    "command_palette": (["colon", "ctrl+p"], None),
     # lateral arrows walk the panes: teams ◂ issues ▸ detail
     "focus_left": (["left"], None),
     "focus_right": (["right"], None),
 }
 
 
-def build_bindings(user_keybinds: dict | None = None) -> list:
-    """App bindings from defaults + config.json overrides. Fail-safe: a bad
-    config falls back to the defaults for the affected action."""
-    merged: dict[str, tuple[list, str | None]] = {}
-    user_keybinds = user_keybinds if user_keybinds is not None else (
-        USER_CONFIG.get("keybinds", {}) if isinstance(USER_CONFIG, dict) else {}
-    )
-    for action, (keys, label) in DEFAULT_KEYBINDS.items():
-        custom = user_keybinds.get(action)
-        if isinstance(custom, str):
-            keys = [custom]
-        elif isinstance(custom, list) and all(isinstance(k, str) for k in custom) and custom:
-            keys = custom
-        merged[action] = (keys, label)
+def _key_list(value) -> list[str]:
+    """A config key value — "x" or ["x", "ctrl+x"] — as a list; [] if invalid."""
+    if isinstance(value, str) and value:
+        return [value]
+    if isinstance(value, list) and value and all(isinstance(k, str) and k for k in value):
+        return list(value)
+    return []
+
+
+def merged_keybinds(user_keybinds: dict | None = None) -> dict[str, list[str]]:
+    """action -> keys, defaults overlaid with config.json "keybinds". Fail-safe:
+    a bad entry falls back to the default keys for that action."""
+    if user_keybinds is None:
+        user_keybinds = USER_CONFIG.get("keybinds", {}) if isinstance(USER_CONFIG, dict) else {}
+    if not isinstance(user_keybinds, dict):
+        user_keybinds = {}
+    return {
+        action: _key_list(user_keybinds.get(action)) or keys
+        for action, (keys, _label) in DEFAULT_KEYBINDS.items()
+    }
+
+
+def load_scripts(config: dict | None = None) -> tuple[list[dict], list[str]]:
+    """config.json "scripts" — extra custom scripts beyond `x`'s
+    coding-tools.json one. Each entry is a coding-tools-style {path, args,
+    env} plus optional "key" (a key or list), "name" (palette title) and
+    "description" (palette subtitle + help overlay). Returns the usable
+    entries, normalised, and a warning per entry that had to be skipped."""
+    if config is None:
+        config = USER_CONFIG
+    raw = config.get("scripts", []) if isinstance(config, dict) else []
+    if not isinstance(raw, list):
+        return [], ['config.json: "scripts" must be a list — ignoring it']
+    scripts: list[dict] = []
+    warnings: list[str] = []
+    for i, entry in enumerate(raw):
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path.strip():
+            warnings.append(f'config.json: scripts[{i}] has no "path" — skipped')
+            continue
+        keys = _key_list(entry.get("key"))
+        if "key" in entry and not keys:
+            warnings.append(f'config.json: scripts[{i}] has an invalid "key" — palette only')
+        name = entry.get("name")
+        desc = entry.get("description")
+        scripts.append({
+            **entry,
+            "keys": keys,
+            "name": name.strip() if isinstance(name, str) and name.strip()
+            else Path(path).name,
+            "description": desc.strip() if isinstance(desc, str) else "",
+        })
+    return scripts, warnings
+
+
+# Keys a script can't take even though they aren't app actions: the lists'
+# and detail panel's own motions, focus movement, and Textual's built-ins.
+RESERVED_KEYS = {
+    "escape", "enter", "up", "down", "tab", "shift+tab",
+    "j", "k", "g", "G", "ctrl+d", "ctrl+u", "ctrl+f", "ctrl+b",
+    "ctrl+p", "ctrl+q", "ctrl+c",
+}
+
+
+def bind_scripts(
+    scripts: list[dict], keymap: dict[str, list[str]]
+) -> tuple[list[tuple[str, int]], list[str]]:
+    """(key, script index) pairs to bind, plus a warning for each script key
+    dropped because ltui or an earlier script already has it — built-ins
+    always win, so a script can't silently steal `s` or `q`."""
+    taken = RESERVED_KEYS | {k for keys in keymap.values() for k in keys}
+    pairs: list[tuple[str, int]] = []
+    warnings: list[str] = []
+    for index, script in enumerate(scripts):
+        for key in script["keys"]:
+            if key in taken:
+                warnings.append(
+                    f"script “{script['name']}”: key {key} is already bound — skipped"
+                )
+                continue
+            taken.add(key)
+            pairs.append((key, index))
+    return pairs, warnings
+
+
+def build_bindings(
+    user_keybinds: dict | None = None, scripts: list[dict] | None = None
+) -> list:
+    """App bindings from defaults + config.json overrides, then one binding
+    per custom-script key."""
+    keymap = merged_keybinds(user_keybinds)
     bindings = [Binding("escape", "back", show=False)]
-    for action, (keys, label) in merged.items():
+    for action, keys in keymap.items():
+        label = DEFAULT_KEYBINDS[action][1]
         for i, key in enumerate(keys):
             bindings.append(
                 Binding(
@@ -443,7 +582,100 @@ def build_bindings(user_keybinds: dict | None = None) -> list:
                     show=bool(label) and i == 0,
                 )
             )
+    scripts = SCRIPTS if scripts is None else scripts
+    for key, index in bind_scripts(scripts, keymap)[0]:
+        bindings.append(
+            Binding(key, f"run_custom_script({index})", scripts[index]["name"], show=False)
+        )
     return bindings
+
+
+def key_label(key: str) -> str:
+    """A Textual key name as the help overlay shows it: slash → /, left → ←,
+    ctrl+d stays ctrl+d."""
+    *mods, base = key.split("+")
+    return "+".join([*mods, format_key(base)])
+
+
+def keys_label(keymap: dict[str, list[str]], *actions: str) -> str:
+    """Keys for one or more actions: x/X for an action with two keys, [ / ]
+    for a pair of actions."""
+    return " / ".join("/".join(key_label(k) for k in keymap.get(a, [])) for a in actions)
+
+
+# The help overlay. A row's key is either literal text (bindings that live on
+# widgets, not the app) or a tuple of app actions, which is rendered from the
+# live keymap so remapped keys show up as remapped.
+HELP_SECTIONS = [
+    ("navigate", [
+        ("ctrl+d / ctrl+u", "half page down / up"),
+        (("prev_group", "next_group"), "previous / next group"),
+        (("command_palette",), "command palette"),
+        ("j/k ↑↓", "move around lists and the detail panel"),
+        (("focus_left", "focus_right"), "switch panes — rightward on a ticket opens it"),
+        ("g / G", "jump to top / bottom"),
+        ("enter", "open ticket detail (click works too)"),
+        ("esc", "close panel · dismiss modal · clear filter"),
+    ]),
+    ("ticket", [
+        (("new_ticket",), "new ticket in the current team"),
+        (("change_status",), "change status"),
+        (("change_priority",), "change priority"),
+        (("change_due_date",), "set or clear due date"),
+        (("edit_labels",), "edit labels"),
+        (("move_project",), "move to a project (or create one)"),
+        (("change_assignee",), "change assignee (or unassign)"),
+        (("add_comment",), "add a comment (ctrl+s to send)"),
+        (("yank",), "yank — copy branch / url / identifier"),
+        (("open_browser",), "open in browser"),
+        (("run_script",), "run custom script (~/.linear/coding-tools.json)"),
+    ]),
+    ("view", [
+        (("filter",), "filter issues"),
+        (("toggle_mine",), "toggle mine only"),
+        (("toggle_group",), "group by status / project / initiative"),
+        (("toggle_sort",), "sort by recent / priority"),
+        (("toggle_hidden",), "show / hide hidden statuses"),
+        (("pick_hidden_states",), "choose statuses to hide"),
+        (("pick_project",), "filter to a single project"),
+        (("cycle_theme",), "cycle theme"),
+        (("open_settings",), "settings"),
+        (("refresh",), "refresh"),
+    ]),
+    ("app", [
+        (("help",), "this help"),
+        ("ctrl+n / ctrl+p", "next / previous inside the command palette"),
+        (("quit",), "quit"),
+    ]),
+]
+
+
+def help_sections(
+    keymap: dict[str, list[str]], scripts: list[dict]
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """HELP_SECTIONS resolved against the live keymap, plus a "scripts"
+    section for config.json scripts — each under the keys it actually got,
+    or "palette" when it has none."""
+    sections = [
+        (title, [
+            (spec if isinstance(spec, str) else keys_label(keymap, *spec), desc)
+            for spec, desc in rows
+        ])
+        for title, rows in HELP_SECTIONS
+    ]
+    if scripts:
+        bound: dict[int, list[str]] = {}
+        for key, index in bind_scripts(scripts, keymap)[0]:
+            bound.setdefault(index, []).append(key_label(key))
+        sections.append(("scripts", [
+            ("/".join(bound.get(i, [])) or "palette", s["description"] or s["name"])
+            for i, s in enumerate(scripts)
+        ]))
+    return sections
+
+
+SCRIPTS, SCRIPT_WARNINGS = load_scripts()
+SCRIPT_WARNINGS += bind_scripts(SCRIPTS, merged_keybinds())[1]
 
 
 CONFIG_TEMPLATE = """{
@@ -454,6 +686,7 @@ CONFIG_TEMPLATE = """{
     "filter": "slash",
     "toggle_mine": "m",
     "toggle_group": "v",
+    "toggle_sort": "S",
     "toggle_hidden": "h",
     "pick_hidden_states": "H",
     "pick_project": "V",
@@ -472,14 +705,15 @@ CONFIG_TEMPLATE = """{
     "run_script": "x",
     "next_group": "right_square_bracket",
     "prev_group": "left_square_bracket",
-    "command_palette": "colon",
+    "command_palette": ["colon", "ctrl+p"],
     "focus_left": "left",
     "focus_right": "right"
   },
   "options": {
     "auto_refresh_seconds": 180,
     "animations": true
-  }
+  },
+  "scripts": []
 }
 """
 
@@ -561,7 +795,8 @@ def state_icon(state: dict) -> str:
 def priority_cell(p: int) -> Text:
     t = Text()
     if p == 1:
-        t.append(" ", style=f"bold {C_PEACH}")
+        # nf-md-alert_box: Linear's urgent mark, a filled square with a "!"
+        t.append("\U000f0027", style=f"bold {C_PEACH}")
         t.append("  ")
     elif p in (2, 3, 4):
         lit = {2: 3, 3: 2, 4: 1}[p]
@@ -632,9 +867,18 @@ def state_sort_key(s: dict):
     return (rank, -pos if s["type"] == "started" else pos)
 
 
-def issue_sort_key(i: dict):
-    # most recently updated first within each status group
-    return (-parse_dt(i["updatedAt"]).timestamp(),)
+def priority_rank(p: int | None) -> int:
+    # Linear's 0 means "no priority" — it belongs after Low, not before Urgent
+    return p if p else 5
+
+
+def issue_sort_key(i: dict, sort_by: str = "recent"):
+    # most recently updated first within each group; in priority mode the
+    # most urgent come first and recency only breaks ties
+    recency = -parse_dt(i["updatedAt"]).timestamp()
+    if sort_by == "priority":
+        return (priority_rank(i.get("priority")), recency)
+    return (recency,)
 
 
 def hide_state(issue: dict, hidden: set[str]) -> bool:
@@ -808,6 +1052,17 @@ class DetailScroll(VerticalScroll):
         # reroute them to pane navigation instead
         Binding("left", "app.focus_left", show=False),
         Binding("right", "app.focus_right", show=False),
+    ]
+
+
+class LtuiCommandPalette(CommandPalette):
+    """Textual's palette plus emacs/readline-style ctrl+n / ctrl+p to move
+    through the results. Screen bindings beat the app's ctrl+p (open the
+    palette), so inside the palette ctrl+p means "previous" instead."""
+
+    BINDINGS = [
+        Binding("ctrl+n", "cursor_down", "Next command", show=False),
+        Binding("ctrl+p", "command_list('cursor_up')", "Previous command", show=False),
     ]
 
 
@@ -1377,52 +1632,11 @@ class HelpModal(ModalScreen):
         Binding("q", "close_modal", show=False),
     ]
 
-    SECTIONS = [
-        ("navigate", [
-            ("ctrl+d / ctrl+u", "half page down / up"),
-            ("[ / ]", "previous / next group"),
-            (":", "command palette"),
-            ("j/k ↑↓", "move around lists and the detail panel"),
-            ("← / →", "switch panes — → on a ticket opens it"),
-            ("g / G", "jump to top / bottom"),
-            ("enter", "open ticket detail (click works too)"),
-            ("esc", "close panel · dismiss modal · clear filter"),
-        ]),
-        ("ticket", [
-            ("n", "new ticket in the current team"),
-            ("s", "change status"),
-            ("p", "change priority"),
-            ("d", "set or clear due date"),
-            ("l", "edit labels"),
-            ("P", "move to a project (or create one)"),
-            ("a", "change assignee (or unassign)"),
-            ("c", "add a comment (ctrl+s to send)"),
-            ("y", "yank — copy branch / url / identifier"),
-            ("o", "open in browser"),
-            ("x", "run custom script (~/.linear/coding-tools.json)"),
-        ]),
-        ("view", [
-            ("/", "filter issues"),
-            ("m", "toggle mine only"),
-            ("v", "group by status / project / initiative"),
-            ("h", "show / hide hidden statuses"),
-            ("H", "choose statuses to hide"),
-            ("V", "filter to a single project"),
-            ("t", "cycle theme"),
-            (",", "settings"),
-            ("r", "refresh"),
-        ]),
-        ("app", [
-            ("?", "this help"),
-            ("ctrl+p", "command palette"),
-            ("q", "quit"),
-        ]),
-    ]
-
     def compose(self) -> ComposeResult:
         with Vertical(id="help-box"):
             yield Static(id="help-title")
-            yield Static(id="help-body")
+            with VerticalScroll(id="help-scroll"):
+                yield Static(id="help-body")
             yield Static(id="help-foot")
 
     def on_mount(self) -> None:
@@ -1431,9 +1645,10 @@ class HelpModal(ModalScreen):
         title.append("\uf11c ", style=C_BLUE)
         title.append("keys", style=f"bold {C_TEXT}")
         self.query_one("#help-title", Static).update(title)
-        key_w = max(len(k) for _, rows in self.SECTIONS for k, _ in rows) + 3
+        sections = help_sections(merged_keybinds(), SCRIPTS)
+        key_w = max(len(k) for _, rows in sections for k, _ in rows) + 3
         body = Text()
-        for section, rows in self.SECTIONS:
+        for section, rows in sections:
             if body:
                 body.append("\n")
             body.append(f" {section}\n", style=f"bold {C_DIM}")
@@ -1694,6 +1909,7 @@ class LTUI(App):
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #help-title {{ padding: 0 1 1 1; }}
+    #help-scroll {{ height: auto; max-height: 70vh; }}
     #help-body {{ height: auto; }}
     #help-foot {{ padding: 1 1 0 1; }}
 
@@ -1727,6 +1943,9 @@ class LTUI(App):
         self._group_by = load_state().get("group_by", "status")
         if self._group_by not in GROUP_MODES:
             self._group_by = "status"
+        self._sort_by = load_state().get("sort_by", "recent")
+        if self._sort_by not in SORT_MODES:
+            self._sort_by = "recent"
         saved = load_state()
         # lower-cased status names; _hide_on lets h show them again without
         # forgetting the choice
@@ -1834,6 +2053,8 @@ class LTUI(App):
         self._update_profile()
         self.set_interval(FX_TICK, self._tick_fx)
         self.query_one("#issues").focus()
+        for warning in SCRIPT_WARNINGS:
+            self.notify(warning, severity="warning", timeout=10)
         try:
             key = load_api_key()
         except Exception:
@@ -2005,6 +2226,7 @@ class LTUI(App):
         data["mine"] = self._mine
         data["theme"] = self.theme
         data["group_by"] = self._group_by
+        data["sort_by"] = self._sort_by
         data["hidden_states"] = sorted(self._hidden_states)
         data["hide_states"] = self._hide_on
         save_state(data)
@@ -2117,7 +2339,7 @@ class LTUI(App):
             issues_list.loading = True
         self._save_state()
         try:
-            data = await self.gql(QL_ISSUES, {"teamId": team["id"]})
+            issues, states, truncated = await fetch_team_issues(self.gql, team["id"])
         except Exception as e:
             issues_list.loading = False
             self._refreshing = False
@@ -2126,9 +2348,9 @@ class LTUI(App):
         if self._team is None or self._team["id"] != team["id"]:
             self._refreshing = False
             return  # user switched teams while refreshing
-        self._set_issues(
-            data["team"]["issues"]["nodes"], data["team"]["states"]["nodes"]
-        )
+        self._set_issues(issues, states)
+        if truncated:
+            self._notify_truncated([team["key"]])
         issues_list.loading = False
         self._refreshing = False
         write_cache(
@@ -2147,6 +2369,13 @@ class LTUI(App):
             if fresh is not None:
                 self._detail_issue = fresh
                 self._update_detail_meta(fresh)
+
+    def _notify_truncated(self, team_keys: list[str]) -> None:
+        self.notify(
+            f"{', '.join(team_keys)}: showing the {MAX_OPEN_ISSUES} most recently "
+            "updated open tickets",
+            severity="warning", timeout=8,
+        )
 
     @staticmethod
     def _stamp_team(issues: list[dict], team: dict) -> list[dict]:
@@ -2180,9 +2409,9 @@ class LTUI(App):
     async def load_all_teams(self) -> None:
         """Every team's board in one list.
 
-        Fans the existing per-team query out concurrently rather than using
-        Linear's workspace-wide issues query: it costs the same wall-clock,
-        returns 250 issues *per team* instead of 250 in total, and keeps the
+        Fans the per-team fetch out concurrently rather than using Linear's
+        workspace-wide issues query: it costs the same wall-clock, keeps each
+        team's own open-issue paging and closed-issue budget, and keeps the
         per-team disk caches — and the team-scoped workflow states that
         mutations need — intact.
         """
@@ -2211,7 +2440,7 @@ class LTUI(App):
         self._save_state()
 
         results = await asyncio.gather(
-            *(self.gql(QL_ISSUES, {"teamId": t["id"]}) for t in teams),
+            *(fetch_team_issues(self.gql, t["id"]) for t in teams),
             return_exceptions=True,
         )
         if not self._all_teams:
@@ -2221,8 +2450,9 @@ class LTUI(App):
         issues: list[dict] = []
         per_team: dict[str, list[dict]] = {}
         failed: list[str] = []
-        for t, data in zip(teams, results):
-            if isinstance(data, Exception) or not data.get("team"):
+        truncated: list[str] = []
+        for t, result in zip(teams, results):
+            if isinstance(result, BaseException):
                 failed.append(t["key"])
                 # keep whatever that team last had rather than dropping it
                 if t["id"] in self._states_by_team:
@@ -2230,13 +2460,12 @@ class LTUI(App):
                     issues += [i for i in cached_issues
                                if (i.get("team") or {}).get("id") == t["id"]]
                 continue
-            issues += self._stamp_team(data["team"]["issues"]["nodes"], t)
-            per_team[t["id"]] = data["team"]["states"]["nodes"]
-            write_cache(
-                f"team-{t['id']}",
-                {"issues": data["team"]["issues"]["nodes"],
-                 "states": data["team"]["states"]["nodes"]},
-            )
+            team_issues, team_states, cut = result
+            if cut:
+                truncated.append(t["key"])
+            issues += self._stamp_team(team_issues, t)
+            per_team[t["id"]] = team_states
+            write_cache(f"team-{t['id']}", {"issues": team_issues, "states": team_states})
 
         issues_list.loading = False
         self._refreshing = False
@@ -2246,6 +2475,8 @@ class LTUI(App):
         if failed:
             self.notify(f"linear: {', '.join(failed)} failed to refresh",
                         severity="warning", timeout=8)
+        if truncated:
+            self._notify_truncated(truncated)
         self._states_by_team.update(per_team)
         self._set_issues(issues, self._merge_states(per_team))
         self.render_issues()
@@ -2493,12 +2724,16 @@ class LTUI(App):
 
         def mine_first(i: dict):
             is_mine = (i.get("assignee") or {}).get("id") == self._viewer_id
-            return (0 if is_mine else 1, *issue_sort_key(i))
+            return (0 if is_mine else 1, *issue_sort_key(i, self._sort_by))
 
         def in_group_key(i: dict):
             # inside a project / initiative keep the status order, then
-            # mine-first + recency
-            return (state_sort_key(i["state"]), *mine_first(i))
+            # mine-first + recency. Sorting by priority puts priority ahead of
+            # status, otherwise it would only reorder tickets sharing a status
+            key = (state_sort_key(i["state"]), *mine_first(i))
+            if self._sort_by == "priority":
+                return (priority_rank(i.get("priority")), *key)
+            return key
 
         if self._group_by == "project":
             by_proj: dict[str, list[dict]] = {}
@@ -2600,6 +2835,7 @@ class LTUI(App):
         group_tag = (
             f" \uf0ca {self._group_by} \u00b7" if self._group_by != "status" else ""
         )
+        sort_tag = " \uf160 priority \u00b7" if self._sort_by == "priority" else ""
         # say when tickets are being held back, and when the hiding is paused
         hide_tag = ""
         if self._hidden_states:
@@ -2608,7 +2844,7 @@ class LTUI(App):
                 else " \uf06e showing hidden \u00b7"
             )
         self.query_one("#centre").border_subtitle = (
-            f"{mine_tag}{proj_tag}{group_tag}{hide_tag} {len(issues)} issues "
+            f"{mine_tag}{proj_tag}{group_tag}{sort_tag}{hide_tag} {len(issues)} issues "
         )
         if keep and keep in self._opt_index:
             ol.highlighted = self._opt_index[keep]
@@ -3024,6 +3260,10 @@ class LTUI(App):
                 self.show_detail(issue)
             self.query_one("#d-scroll").focus()
 
+    def action_command_palette(self) -> None:
+        if self.use_command_palette and not CommandPalette.is_open(self):
+            self.push_screen(LtuiCommandPalette(id="--command-palette"))
+
     def action_toggle_group(self) -> None:
         nxt = (GROUP_MODES.index(self._group_by) + 1) % len(GROUP_MODES)
         self._group_by = GROUP_MODES[nxt]
@@ -3034,6 +3274,13 @@ class LTUI(App):
             self.load_initiatives(rerender=True)
         self.render_issues()
         self.notify(f"\uf0ca grouping by {self._group_by}")
+
+    def action_toggle_sort(self) -> None:
+        nxt = (SORT_MODES.index(self._sort_by) + 1) % len(SORT_MODES)
+        self._sort_by = SORT_MODES[nxt]
+        self._save_state()
+        self.render_issues()
+        self.notify(f"\uf160 sorting by {self._sort_by}")
 
     def action_toggle_hidden(self) -> None:
         if not self._hidden_states:
@@ -3399,11 +3646,41 @@ class LTUI(App):
         except Exception as e:
             self.notify(f" bad coding-tools.json: {e}", severity="error")
             return
-        path = cfg.get("path")
-        if not path:
+        if not cfg.get("path"):
             self.notify(" coding-tools.json: openIssue.path missing", severity="error")
             return
-        path = Path(str(path)).expanduser()
+        self._launch_script(cfg, issue, "script")
+
+    def action_run_custom_script(self, index: int) -> None:
+        """Run scripts[index] from config.json — bound to its "key" and listed
+        in the command palette under its "name"."""
+        if not 0 <= index < len(SCRIPTS):
+            return
+        issue = self._current_issue()
+        if not issue:
+            self.notify(" no ticket highlighted", severity="warning")
+            return
+        self._launch_script(SCRIPTS[index], issue, SCRIPTS[index]["name"])
+
+    def get_system_commands(self, screen):
+        yield from super().get_system_commands(screen)
+        if LINEAR_CODING_TOOLS.exists():
+            yield SystemCommand(
+                "Run custom script",
+                f"the {LINEAR_CODING_TOOLS.name} script, on the highlighted ticket",
+                self.action_run_script,
+            )
+        for index, script in enumerate(SCRIPTS):
+            yield SystemCommand(
+                script["name"],
+                script["description"] or f"run {script['path']} on the highlighted ticket",
+                partial(self.action_run_custom_script, index),
+            )
+
+    def _launch_script(self, cfg: dict, issue: dict, label: str) -> None:
+        """Launch a coding-tools-style {path, args, env} script, detached,
+        against `issue` with the LINEAR_* env contract."""
+        path = Path(str(cfg["path"])).expanduser()
 
         title = issue.get("title") or ""
         body = issue.get("description") or ""
@@ -3468,9 +3745,9 @@ class LTUI(App):
                 start_new_session=True,  # never fight the TUI for the tty
             )
         except Exception as e:
-            self.notify(f" script failed: {e}", severity="error")
+            self.notify(f" {escape(label)} failed: {e}", severity="error")
             return
-        self.notify(f" script launched for {issue['identifier']}")
+        self.notify(f" {escape(label)} launched for {issue['identifier']}")
 
     def action_yank(self) -> None:
         issue = self._current_issue()
@@ -3517,8 +3794,9 @@ keys: enter open ticket   n new   s status   p priority   d due date
       c comment
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
+        (more scripts, each with its own key: "scripts" in config.json)
       m mine only   v group status/project/initiative
-      V one project   t theme
+      V one project   S sort recent/priority   t theme
       h show/hide hidden statuses   H choose statuses to hide
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
@@ -3527,7 +3805,8 @@ arrows: up/down move · left/right walk the panes teams - issues - detail
         (right on a ticket opens it; every list takes arrows everywhere)
 
 vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
-      [ / ] previous / next group   : command palette
+      [ / ] previous / next group   : or ctrl+p command palette
+      (inside it: ctrl+n / ctrl+p next / previous)
 
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""

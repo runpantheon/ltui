@@ -158,10 +158,11 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `c`      | add a **comment** (`ctrl+s` to send)          |
 | `o`      | open ticket in **browser**                    |
 | `y`      | **yank** — copy branch name / url / id        |
-| `x`      | **run your custom script** on the ticket      |
+| `x`      | **run your custom script** on the ticket — [add more](#more-scripts) |
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
 | `v`      | cycle grouping: **status → project → initiative** |
+| `S`      | sort within groups: **recent ↔ priority**     |
 | `h`      | toggle **hidden statuses** on / off           |
 | `H`      | choose **statuses to hide** (e.g. Duplicate)  |
 | `V`      | filter to a **single project**                |
@@ -171,7 +172,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `g` `G`  | jump to top / bottom                          |
 | `ctrl+d/u` `ctrl+f/b` | half page / full page             |
 | `[` `]`  | previous / next **group**                     |
-| `:`      | command palette                               |
+| `:` `ctrl+p` | command palette — `ctrl+n` / `ctrl+p` move through it |
 | `?`      | **help** — keybinding cheatsheet              |
 | `q`      | quit                                          |
 
@@ -204,8 +205,8 @@ bottom.
 
 The first row of the teams pane is **all teams** — one board over your entire
 workspace instead of a single team. It fetches every team in parallel, so it
-costs about the same wall-clock as one team and gives you 250 tickets *per
-team* rather than 250 across all of them.
+costs about the same wall-clock as one team, and every team keeps its own
+board: all of its open tickets plus its 50 most recently closed.
 
 The catch it handles for you: Linear scopes workflow states to a team, so the
 `In Progress` on one team is a different state than the `In Progress` on
@@ -288,6 +289,42 @@ Read Linear issue {{issue.identifier}} and await further instructions.
 
 The script is detached from the TUI's terminal, so it will not fight ltui for
 the tty; have it log somewhere or open a window of its own.
+
+### more scripts
+
+`x` only covers the one script Linear's desktop app knows about. For more, add
+a `scripts` list to `~/.config/ltui/config.json`. Each entry takes the same
+`path` / `args` / `env` as above (same placeholders, same `LINEAR_*` rules),
+plus:
+
+- `key`: a key, or a list of keys, that runs it. Optional.
+- `name`: its title in the command palette (`:` / `ctrl+p`). Defaults to the
+  script's file name.
+- `description`: shown under the name in the palette, and next to the key in
+  the `?` overlay (which falls back to `name`).
+
+```jsonc
+{
+  "scripts": [
+    {
+      "key": "X",
+      "name": "Claude on ticket",
+      "description": "open a worktree and start Claude on the ticket",
+      "path": "~/bin/claude-on-ticket",
+      "args": ["{{issue.branchName}}"]
+    },
+    {
+      "name": "Draft PR",            // no key: palette only
+      "path": "~/bin/draft-pr",
+      "env": ["LINEAR_ISSUE_IDENTIFIER", "LINEAR_ISSUE_URL"]
+    }
+  ]
+}
+```
+
+Every script, including `x`'s, appears in the command palette. Built-in keys
+win: if a script's `key` is already bound (remap the built-in first under
+`keybinds`), ltui skips that key and warns at startup.
 
 key names are [Textual key names](https://textual.textualize.io/guide/input/#key)
 (`slash`, `comma`, `question_mark`, `ctrl+x`, …). unknown or invalid entries
@@ -382,13 +419,14 @@ launch ──▶ render cached issues (~50ms) ──▶ you're already working
 ## faq
 
 <details>
-<summary><b>Only ~250 issues show per team?</b></summary>
+<summary><b>Which tickets does ltui load?</b></summary>
 
-ltui fetches the 250 most-recently-updated issues per team. For triage that's
-effectively everything alive; ancient `Done` tickets fall off the bottom,
-which is where they belong. The all-teams board keeps that budget per team
-rather than sharing one across the workspace, so five teams means up to 1250
-tickets in the list.
+Every **open** ticket in the team — anything not Done, Canceled or Duplicate,
+however long it has sat untouched — plus the **50 most recently updated
+closed** ones, so the `Done` group still shows recent work while ancient
+history stays out of the way. Open tickets are fetched 250 at a time; a team
+with more than 2000 open tickets shows its 2000 most recently updated and says
+so. The all-teams board does this per team.
 
 </details>
 
