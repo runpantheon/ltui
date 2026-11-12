@@ -31,6 +31,7 @@ from textual import on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.color import Color as TColor
+from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.keys import format_key
 from textual.screen import ModalScreen
@@ -217,6 +218,8 @@ INITIATIVE_RANK = {
 }
 
 GROUP_MODES = ["status", "project", "initiative"]
+# order of tickets inside a group: freshest first, or most urgent first
+SORT_MODES = ["recent", "priority"]
 
 # the due-date column takes 8 columns off the title. Below this list width —
 # roughly a half-screen list with the detail panel open — the title has none to
@@ -250,15 +253,70 @@ query {
   teams(first: 50) { nodes { id name key color } }
 }"""
 
-QL_ISSUES = f"""
-query($teamId: String!) {{
+# a team's board is every open ticket plus the most recently updated closed
+# ones. One updatedAt-ordered window for both let busy teams push untouched
+# open tickets out behind a run of recently closed ones.
+CLOSED_TYPES = ["completed", "canceled", "duplicate"]
+PAGE_SIZE = 250  # Linear's maximum page size
+CLOSED_LIMIT = 50  # enough for the Done group to show recent work
+MAX_OPEN_ISSUES = 2000  # runaway guard: ~8 sequential pages per team
+
+QL_OPEN_ISSUES = f"""
+query($teamId: String!, $after: String) {{
   team(id: $teamId) {{
-    issues(first: 250, orderBy: updatedAt) {{
+    issues(
+      first: {PAGE_SIZE}, after: $after, orderBy: updatedAt,
+      filter: {{ state: {{ type: {{ nin: {json.dumps(CLOSED_TYPES)} }} }} }}
+    ) {{
       nodes {{ {ISSUE_FIELDS} }}
+      pageInfo {{ hasNextPage endCursor }}
     }}
     states {{ nodes {{ id name color type position }} }}
   }}
 }}"""
+
+QL_CLOSED_ISSUES = f"""
+query($teamId: String!) {{
+  team(id: $teamId) {{
+    issues(
+      first: {CLOSED_LIMIT}, orderBy: updatedAt,
+      filter: {{ state: {{ type: {{ in: {json.dumps(CLOSED_TYPES)} }} }} }}
+    ) {{
+      nodes {{ {ISSUE_FIELDS} }}
+    }}
+  }}
+}}"""
+
+
+async def fetch_team_issues(gql, team_id: str) -> tuple[list[dict], list[dict], bool]:
+    """A team's board: (issues, workflow states, truncated).
+
+    Pages through every open issue (up to MAX_OPEN_ISSUES) and adds the
+    CLOSED_LIMIT most recently updated closed ones. `truncated` is True when
+    the open issues ran past MAX_OPEN_ISSUES. The first open page and the
+    closed issues are fetched concurrently; later pages follow the cursor.
+    """
+    first, closed = await asyncio.gather(
+        gql(QL_OPEN_ISSUES, {"teamId": team_id}),
+        gql(QL_CLOSED_ISSUES, {"teamId": team_id}),
+    )
+    team = first.get("team")
+    if not team:
+        raise RuntimeError("team not found")
+    issues = list(team["issues"]["nodes"])
+    page = team["issues"].get("pageInfo") or {}
+    truncated = False
+    while page.get("hasNextPage") and page.get("endCursor"):
+        if len(issues) >= MAX_OPEN_ISSUES:
+            truncated = True
+            break
+        data = await gql(QL_OPEN_ISSUES, {"teamId": team_id, "after": page["endCursor"]})
+        issues += data["team"]["issues"]["nodes"]
+        page = data["team"]["issues"].get("pageInfo") or {}
+    issues += ((closed.get("team") or {}).get("issues") or {}).get("nodes", [])
+    # a ticket closed between the two queries could come back from both
+    unique = list({i["id"]: i for i in issues}.values())
+    return unique, team["states"]["nodes"], truncated
 
 M_CREATE = f"""
 mutation($teamId: String!, $title: String!, $desc: String) {{
@@ -394,6 +452,7 @@ DEFAULT_KEYBINDS = {
     "filter": (["slash"], "filter"),
     "toggle_mine": (["m"], "mine"),
     "toggle_group": (["v"], "group"),
+    "toggle_sort": (["S"], None),
     "pick_project": (["V"], None),
     "cycle_theme": (["t"], "theme"),
     "open_settings": (["comma"], None),
@@ -411,7 +470,7 @@ DEFAULT_KEYBINDS = {
     # vim layer (additive)
     "next_group": (["right_square_bracket"], None),
     "prev_group": (["left_square_bracket"], None),
-    "command_palette": (["colon"], None),
+    "command_palette": (["colon", "ctrl+p"], None),
     # lateral arrows walk the panes: teams ◂ issues ▸ detail
     "focus_left": (["left"], None),
     "focus_right": (["right"], None),
@@ -573,6 +632,7 @@ HELP_SECTIONS = [
         (("filter",), "filter issues"),
         (("toggle_mine",), "toggle mine only"),
         (("toggle_group",), "group by status / project / initiative"),
+        (("toggle_sort",), "sort by recent / priority"),
         (("pick_project",), "filter to a single project"),
         (("cycle_theme",), "cycle theme"),
         (("open_settings",), "settings"),
@@ -580,7 +640,7 @@ HELP_SECTIONS = [
     ]),
     ("app", [
         (("help",), "this help"),
-        ("ctrl+p", "command palette"),
+        ("ctrl+n / ctrl+p", "next / previous inside the command palette"),
         (("quit",), "quit"),
     ]),
 ]
@@ -622,6 +682,7 @@ CONFIG_TEMPLATE = """{
     "filter": "slash",
     "toggle_mine": "m",
     "toggle_group": "v",
+    "toggle_sort": "S",
     "pick_project": "V",
     "cycle_theme": "t",
     "open_settings": "comma",
@@ -638,7 +699,7 @@ CONFIG_TEMPLATE = """{
     "run_script": "x",
     "next_group": "right_square_bracket",
     "prev_group": "left_square_bracket",
-    "command_palette": "colon",
+    "command_palette": ["colon", "ctrl+p"],
     "focus_left": "left",
     "focus_right": "right"
   },
@@ -728,7 +789,8 @@ def state_icon(state: dict) -> str:
 def priority_cell(p: int) -> Text:
     t = Text()
     if p == 1:
-        t.append(" ", style=f"bold {C_PEACH}")
+        # nf-md-alert_box: Linear's urgent mark, a filled square with a "!"
+        t.append("\U000f0027", style=f"bold {C_PEACH}")
         t.append("  ")
     elif p in (2, 3, 4):
         lit = {2: 3, 3: 2, 4: 1}[p]
@@ -799,9 +861,18 @@ def state_sort_key(s: dict):
     return (rank, -pos if s["type"] == "started" else pos)
 
 
-def issue_sort_key(i: dict):
-    # most recently updated first within each status group
-    return (-parse_dt(i["updatedAt"]).timestamp(),)
+def priority_rank(p: int | None) -> int:
+    # Linear's 0 means "no priority" — it belongs after Low, not before Urgent
+    return p if p else 5
+
+
+def issue_sort_key(i: dict, sort_by: str = "recent"):
+    # most recently updated first within each group; in priority mode the
+    # most urgent come first and recency only breaks ties
+    recency = -parse_dt(i["updatedAt"]).timestamp()
+    if sort_by == "priority":
+        return (priority_rank(i.get("priority")), recency)
+    return (recency,)
 
 
 def initiative_sort_key(init: dict):
@@ -968,6 +1039,17 @@ class DetailScroll(VerticalScroll):
         # reroute them to pane navigation instead
         Binding("left", "app.focus_left", show=False),
         Binding("right", "app.focus_right", show=False),
+    ]
+
+
+class LtuiCommandPalette(CommandPalette):
+    """Textual's palette plus emacs/readline-style ctrl+n / ctrl+p to move
+    through the results. Screen bindings beat the app's ctrl+p (open the
+    palette), so inside the palette ctrl+p means "previous" instead."""
+
+    BINDINGS = [
+        Binding("ctrl+n", "cursor_down", "Next command", show=False),
+        Binding("ctrl+p", "command_list('cursor_up')", "Previous command", show=False),
     ]
 
 
@@ -1831,6 +1913,9 @@ class LTUI(App):
         self._group_by = load_state().get("group_by", "status")
         if self._group_by not in GROUP_MODES:
             self._group_by = "status"
+        self._sort_by = load_state().get("sort_by", "recent")
+        if self._sort_by not in SORT_MODES:
+            self._sort_by = "recent"
         self._filter = ""
         self._project_filter: str | None = None  # project id, "" = no-project
         self._detail_issue: dict | None = None
@@ -2104,6 +2189,7 @@ class LTUI(App):
         data["mine"] = self._mine
         data["theme"] = self.theme
         data["group_by"] = self._group_by
+        data["sort_by"] = self._sort_by
         save_state(data)
 
     @property
@@ -2214,7 +2300,7 @@ class LTUI(App):
             issues_list.loading = True
         self._save_state()
         try:
-            data = await self.gql(QL_ISSUES, {"teamId": team["id"]})
+            issues, states, truncated = await fetch_team_issues(self.gql, team["id"])
         except Exception as e:
             issues_list.loading = False
             self._refreshing = False
@@ -2223,9 +2309,9 @@ class LTUI(App):
         if self._team is None or self._team["id"] != team["id"]:
             self._refreshing = False
             return  # user switched teams while refreshing
-        self._set_issues(
-            data["team"]["issues"]["nodes"], data["team"]["states"]["nodes"]
-        )
+        self._set_issues(issues, states)
+        if truncated:
+            self._notify_truncated([team["key"]])
         issues_list.loading = False
         self._refreshing = False
         write_cache(
@@ -2244,6 +2330,13 @@ class LTUI(App):
             if fresh is not None:
                 self._detail_issue = fresh
                 self._update_detail_meta(fresh)
+
+    def _notify_truncated(self, team_keys: list[str]) -> None:
+        self.notify(
+            f"{', '.join(team_keys)}: showing the {MAX_OPEN_ISSUES} most recently "
+            "updated open tickets",
+            severity="warning", timeout=8,
+        )
 
     @staticmethod
     def _stamp_team(issues: list[dict], team: dict) -> list[dict]:
@@ -2277,9 +2370,9 @@ class LTUI(App):
     async def load_all_teams(self) -> None:
         """Every team's board in one list.
 
-        Fans the existing per-team query out concurrently rather than using
-        Linear's workspace-wide issues query: it costs the same wall-clock,
-        returns 250 issues *per team* instead of 250 in total, and keeps the
+        Fans the per-team fetch out concurrently rather than using Linear's
+        workspace-wide issues query: it costs the same wall-clock, keeps each
+        team's own open-issue paging and closed-issue budget, and keeps the
         per-team disk caches — and the team-scoped workflow states that
         mutations need — intact.
         """
@@ -2308,7 +2401,7 @@ class LTUI(App):
         self._save_state()
 
         results = await asyncio.gather(
-            *(self.gql(QL_ISSUES, {"teamId": t["id"]}) for t in teams),
+            *(fetch_team_issues(self.gql, t["id"]) for t in teams),
             return_exceptions=True,
         )
         if not self._all_teams:
@@ -2318,8 +2411,9 @@ class LTUI(App):
         issues: list[dict] = []
         per_team: dict[str, list[dict]] = {}
         failed: list[str] = []
-        for t, data in zip(teams, results):
-            if isinstance(data, Exception) or not data.get("team"):
+        truncated: list[str] = []
+        for t, result in zip(teams, results):
+            if isinstance(result, BaseException):
                 failed.append(t["key"])
                 # keep whatever that team last had rather than dropping it
                 if t["id"] in self._states_by_team:
@@ -2327,13 +2421,12 @@ class LTUI(App):
                     issues += [i for i in cached_issues
                                if (i.get("team") or {}).get("id") == t["id"]]
                 continue
-            issues += self._stamp_team(data["team"]["issues"]["nodes"], t)
-            per_team[t["id"]] = data["team"]["states"]["nodes"]
-            write_cache(
-                f"team-{t['id']}",
-                {"issues": data["team"]["issues"]["nodes"],
-                 "states": data["team"]["states"]["nodes"]},
-            )
+            team_issues, team_states, cut = result
+            if cut:
+                truncated.append(t["key"])
+            issues += self._stamp_team(team_issues, t)
+            per_team[t["id"]] = team_states
+            write_cache(f"team-{t['id']}", {"issues": team_issues, "states": team_states})
 
         issues_list.loading = False
         self._refreshing = False
@@ -2343,6 +2436,8 @@ class LTUI(App):
         if failed:
             self.notify(f"linear: {', '.join(failed)} failed to refresh",
                         severity="warning", timeout=8)
+        if truncated:
+            self._notify_truncated(truncated)
         self._states_by_team.update(per_team)
         self._set_issues(issues, self._merge_states(per_team))
         self.render_issues()
@@ -2585,12 +2680,16 @@ class LTUI(App):
 
         def mine_first(i: dict):
             is_mine = (i.get("assignee") or {}).get("id") == self._viewer_id
-            return (0 if is_mine else 1, *issue_sort_key(i))
+            return (0 if is_mine else 1, *issue_sort_key(i, self._sort_by))
 
         def in_group_key(i: dict):
             # inside a project / initiative keep the status order, then
-            # mine-first + recency
-            return (state_sort_key(i["state"]), *mine_first(i))
+            # mine-first + recency. Sorting by priority puts priority ahead of
+            # status, otherwise it would only reorder tickets sharing a status
+            key = (state_sort_key(i["state"]), *mine_first(i))
+            if self._sort_by == "priority":
+                return (priority_rank(i.get("priority")), *key)
+            return key
 
         if self._group_by == "project":
             by_proj: dict[str, list[dict]] = {}
@@ -2692,8 +2791,9 @@ class LTUI(App):
         group_tag = (
             f" \uf0ca {self._group_by} \u00b7" if self._group_by != "status" else ""
         )
+        sort_tag = " \uf160 priority \u00b7" if self._sort_by == "priority" else ""
         self.query_one("#centre").border_subtitle = (
-            f"{mine_tag}{proj_tag}{group_tag} {len(issues)} issues "
+            f"{mine_tag}{proj_tag}{group_tag}{sort_tag} {len(issues)} issues "
         )
         if keep and keep in self._opt_index:
             ol.highlighted = self._opt_index[keep]
@@ -3104,6 +3204,10 @@ class LTUI(App):
                 self.show_detail(issue)
             self.query_one("#d-scroll").focus()
 
+    def action_command_palette(self) -> None:
+        if self.use_command_palette and not CommandPalette.is_open(self):
+            self.push_screen(LtuiCommandPalette(id="--command-palette"))
+
     def action_toggle_group(self) -> None:
         nxt = (GROUP_MODES.index(self._group_by) + 1) % len(GROUP_MODES)
         self._group_by = GROUP_MODES[nxt]
@@ -3114,6 +3218,13 @@ class LTUI(App):
             self.load_initiatives(rerender=True)
         self.render_issues()
         self.notify(f"\uf0ca grouping by {self._group_by}")
+
+    def action_toggle_sort(self) -> None:
+        nxt = (SORT_MODES.index(self._sort_by) + 1) % len(SORT_MODES)
+        self._sort_by = SORT_MODES[nxt]
+        self._save_state()
+        self.render_issues()
+        self.notify(f"\uf160 sorting by {self._sort_by}")
 
     def action_toggle_mine(self) -> None:
         self._mine = not self._mine
@@ -3585,7 +3696,7 @@ keys: enter open ticket   n new   s status   p priority   d due date
       x run ~/.linear/coding-tools.json custom script on the ticket
         (more scripts, each with its own key: "scripts" in config.json)
       m mine only   v group status/project/initiative
-      V one project   t theme
+      V one project   S sort recent/priority   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 
@@ -3593,7 +3704,8 @@ arrows: up/down move · left/right walk the panes teams - issues - detail
         (right on a ticket opens it; every list takes arrows everywhere)
 
 vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
-      [ / ] previous / next group   : command palette
+      [ / ] previous / next group   : or ctrl+p command palette
+      (inside it: ctrl+n / ctrl+p next / previous)
 
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""
