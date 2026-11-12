@@ -48,6 +48,7 @@ API_ROOT = "/api/v4"
 PAGE_SIZE = 100  # v4's maximum
 BOARD_CAP = 200
 LIST_CAP = 500
+LOOKUP_CAP = 2000
 CACHE_VERSION = 2
 AUTO_REFRESH_SECONDS = 180
 
@@ -254,6 +255,12 @@ class Listing(list, Generic[T]):
     @property
     def more(self) -> int:
         return max(self.total - len(self), 0)
+
+
+class Lookup(dict):
+    def __init__(self, raw: Listing[dict], normalize: Callable[[dict], dict]) -> None:
+        super().__init__((e["id"], normalize(e)) for e in raw)
+        self.whole = not raw.more
 
 
 class StoryPatch(TypedDict, total=False):
@@ -478,10 +485,14 @@ class Shortcut:
             f"/teams/{team_id}/stories", cap=BOARD_CAP,
             order_by="updated_at", order_dir="desc", fields=STORY_FIELDS,
         )
-        if any((s.get("workflow_state") or {}).get("id") not in states for s in stories):
+        if states.whole and any(
+            (s.get("workflow_state") or {}).get("id") not in states for s in stories
+        ):
             self._memo.pop("states", None)
             me, states, labels = await self._lookups()
-        if any(l["id"] not in labels for s in stories for l in nested(s, "labels")):
+        if labels.whole and any(
+            l["id"] not in labels for s in stories for l in nested(s, "labels")
+        ):
             self._memo.pop("labels", None)
         return Listing(
             [normalize_story(s, states, labels, me["id"]) for s in stories], stories.total
@@ -489,14 +500,16 @@ class Shortcut:
 
     async def detail(self, issue: dict) -> dict:
         comments, items, whole = await asyncio.gather(
-            self._list(f"/stories/{issue['id']}/comments"),
+            self._list(f"/stories/{issue['id']}/comments",
+                       order_by="position", order_dir="desc"),
             self._list(f"/stories/{issue['id']}/checklist-items",
                        order_by="position", order_dir="asc"),
             self.complete(issue),
         )
+        shown = [normalize_comment(c) for c in comments if not c.get("deleted")]
         return {
             "issue": whole,
-            "comments": [normalize_comment(c) for c in comments if not c.get("deleted")],
+            "comments": Listing(shown, comments.total - (len(comments) - len(shown))),
             "children": [normalize_task(t) for t in items],
         }
 
@@ -625,19 +638,15 @@ class Shortcut:
 
     async def _fetch_labels(self) -> Listing[dict]:
         # a story can still carry an archived label, so its colour must be known
-        return await self._list("/labels", filter="include_archived")
+        return await self._list("/labels", cap=LOOKUP_CAP, filter="include_archived")
 
-    async def _lookups(self) -> tuple[dict, dict[int, dict], dict[int, dict]]:
+    async def _lookups(self) -> tuple[dict, Lookup, Lookup]:
         me, states, labels = await asyncio.gather(
             self.whoami(),
-            self._once("states", lambda: self._list("/workflow-states")),
+            self._once("states", lambda: self._list("/workflow-states", cap=LOOKUP_CAP)),
             self._once("labels", self._fetch_labels),
         )
-        return (
-            me,
-            {s["id"]: normalize_state(s) for s in states},
-            {l["id"]: normalize_label(l) for l in labels},
-        )
+        return me, Lookup(states, normalize_state), Lookup(labels, normalize_label)
 
     async def _patch_story(self, story_id: str, body: StoryPatch) -> None:
         await self._request("PATCH", f"/stories/{story_id}", json=body)
@@ -2244,9 +2253,11 @@ class SCTUI(App):
                 row.append(f" {c_title}", style=C_TEXT)
                 await cbox.mount(Static(row))
             cbox.add_class("visible")
-        comments = sorted(detail["comments"], key=lambda c: c["createdAt"])
+        fetched = detail["comments"]
+        comments = sorted(fetched, key=lambda c: c["createdAt"])
+        count = f"{len(comments)} of {fetched.total}" if fetched.more else f"{len(comments)}"
         head_text = Text(" ", style=C_MAUVE)
-        head_text.append(f" comments · {len(comments)}", style=f"bold {C_SUB}")
+        head_text.append(f" comments · {count}", style=f"bold {C_SUB}")
         head.update(head_text)
         if not comments:
             await box.mount(Static(Text("   nothing here yet", style=C_DIM)))
