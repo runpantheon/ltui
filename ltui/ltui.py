@@ -251,15 +251,70 @@ query {
   teams(first: 50) { nodes { id name key color } }
 }"""
 
-QL_ISSUES = f"""
-query($teamId: String!) {{
+# a team's board is every open ticket plus the most recently updated closed
+# ones. One updatedAt-ordered window for both let busy teams push untouched
+# open tickets out behind a run of recently closed ones.
+CLOSED_TYPES = ["completed", "canceled", "duplicate"]
+PAGE_SIZE = 250  # Linear's maximum page size
+CLOSED_LIMIT = 50  # enough for the Done group to show recent work
+MAX_OPEN_ISSUES = 2000  # runaway guard: ~8 sequential pages per team
+
+QL_OPEN_ISSUES = f"""
+query($teamId: String!, $after: String) {{
   team(id: $teamId) {{
-    issues(first: 250, orderBy: updatedAt) {{
+    issues(
+      first: {PAGE_SIZE}, after: $after, orderBy: updatedAt,
+      filter: {{ state: {{ type: {{ nin: {json.dumps(CLOSED_TYPES)} }} }} }}
+    ) {{
       nodes {{ {ISSUE_FIELDS} }}
+      pageInfo {{ hasNextPage endCursor }}
     }}
     states {{ nodes {{ id name color type position }} }}
   }}
 }}"""
+
+QL_CLOSED_ISSUES = f"""
+query($teamId: String!) {{
+  team(id: $teamId) {{
+    issues(
+      first: {CLOSED_LIMIT}, orderBy: updatedAt,
+      filter: {{ state: {{ type: {{ in: {json.dumps(CLOSED_TYPES)} }} }} }}
+    ) {{
+      nodes {{ {ISSUE_FIELDS} }}
+    }}
+  }}
+}}"""
+
+
+async def fetch_team_issues(gql, team_id: str) -> tuple[list[dict], list[dict], bool]:
+    """A team's board: (issues, workflow states, truncated).
+
+    Pages through every open issue (up to MAX_OPEN_ISSUES) and adds the
+    CLOSED_LIMIT most recently updated closed ones. `truncated` is True when
+    the open issues ran past MAX_OPEN_ISSUES. The first open page and the
+    closed issues are fetched concurrently; later pages follow the cursor.
+    """
+    first, closed = await asyncio.gather(
+        gql(QL_OPEN_ISSUES, {"teamId": team_id}),
+        gql(QL_CLOSED_ISSUES, {"teamId": team_id}),
+    )
+    team = first.get("team")
+    if not team:
+        raise RuntimeError("team not found")
+    issues = list(team["issues"]["nodes"])
+    page = team["issues"].get("pageInfo") or {}
+    truncated = False
+    while page.get("hasNextPage") and page.get("endCursor"):
+        if len(issues) >= MAX_OPEN_ISSUES:
+            truncated = True
+            break
+        data = await gql(QL_OPEN_ISSUES, {"teamId": team_id, "after": page["endCursor"]})
+        issues += data["team"]["issues"]["nodes"]
+        page = data["team"]["issues"].get("pageInfo") or {}
+    issues += ((closed.get("team") or {}).get("issues") or {}).get("nodes", [])
+    # a ticket closed between the two queries could come back from both
+    unique = list({i["id"]: i for i in issues}.values())
+    return unique, team["states"]["nodes"], truncated
 
 M_CREATE = f"""
 mutation($teamId: String!, $title: String!, $desc: String) {{
@@ -2109,7 +2164,7 @@ class LTUI(App):
             issues_list.loading = True
         self._save_state()
         try:
-            data = await self.gql(QL_ISSUES, {"teamId": team["id"]})
+            issues, states, truncated = await fetch_team_issues(self.gql, team["id"])
         except Exception as e:
             issues_list.loading = False
             self._refreshing = False
@@ -2118,9 +2173,9 @@ class LTUI(App):
         if self._team is None or self._team["id"] != team["id"]:
             self._refreshing = False
             return  # user switched teams while refreshing
-        self._set_issues(
-            data["team"]["issues"]["nodes"], data["team"]["states"]["nodes"]
-        )
+        self._set_issues(issues, states)
+        if truncated:
+            self._notify_truncated([team["key"]])
         issues_list.loading = False
         self._refreshing = False
         write_cache(
@@ -2139,6 +2194,13 @@ class LTUI(App):
             if fresh is not None:
                 self._detail_issue = fresh
                 self._update_detail_meta(fresh)
+
+    def _notify_truncated(self, team_keys: list[str]) -> None:
+        self.notify(
+            f"{', '.join(team_keys)}: showing the {MAX_OPEN_ISSUES} most recently "
+            "updated open tickets",
+            severity="warning", timeout=8,
+        )
 
     @staticmethod
     def _stamp_team(issues: list[dict], team: dict) -> list[dict]:
@@ -2172,9 +2234,9 @@ class LTUI(App):
     async def load_all_teams(self) -> None:
         """Every team's board in one list.
 
-        Fans the existing per-team query out concurrently rather than using
-        Linear's workspace-wide issues query: it costs the same wall-clock,
-        returns 250 issues *per team* instead of 250 in total, and keeps the
+        Fans the per-team fetch out concurrently rather than using Linear's
+        workspace-wide issues query: it costs the same wall-clock, keeps each
+        team's own open-issue paging and closed-issue budget, and keeps the
         per-team disk caches — and the team-scoped workflow states that
         mutations need — intact.
         """
@@ -2203,7 +2265,7 @@ class LTUI(App):
         self._save_state()
 
         results = await asyncio.gather(
-            *(self.gql(QL_ISSUES, {"teamId": t["id"]}) for t in teams),
+            *(fetch_team_issues(self.gql, t["id"]) for t in teams),
             return_exceptions=True,
         )
         if not self._all_teams:
@@ -2213,8 +2275,9 @@ class LTUI(App):
         issues: list[dict] = []
         per_team: dict[str, list[dict]] = {}
         failed: list[str] = []
-        for t, data in zip(teams, results):
-            if isinstance(data, Exception) or not data.get("team"):
+        truncated: list[str] = []
+        for t, result in zip(teams, results):
+            if isinstance(result, BaseException):
                 failed.append(t["key"])
                 # keep whatever that team last had rather than dropping it
                 if t["id"] in self._states_by_team:
@@ -2222,13 +2285,12 @@ class LTUI(App):
                     issues += [i for i in cached_issues
                                if (i.get("team") or {}).get("id") == t["id"]]
                 continue
-            issues += self._stamp_team(data["team"]["issues"]["nodes"], t)
-            per_team[t["id"]] = data["team"]["states"]["nodes"]
-            write_cache(
-                f"team-{t['id']}",
-                {"issues": data["team"]["issues"]["nodes"],
-                 "states": data["team"]["states"]["nodes"]},
-            )
+            team_issues, team_states, cut = result
+            if cut:
+                truncated.append(t["key"])
+            issues += self._stamp_team(team_issues, t)
+            per_team[t["id"]] = team_states
+            write_cache(f"team-{t['id']}", {"issues": team_issues, "states": team_states})
 
         issues_list.loading = False
         self._refreshing = False
@@ -2238,6 +2300,8 @@ class LTUI(App):
         if failed:
             self.notify(f"linear: {', '.join(failed)} failed to refresh",
                         severity="warning", timeout=8)
+        if truncated:
+            self._notify_truncated(truncated)
         self._states_by_team.update(per_team)
         self._set_issues(issues, self._merge_states(per_team))
         self.render_issues()

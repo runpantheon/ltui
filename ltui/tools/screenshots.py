@@ -243,10 +243,17 @@ class DemoApp(LTUI):
             return BOOT
         if "initiatives(first" in query:
             return {"initiatives": {"nodes": INITIATIVES}}
-        if "issues(first" in query:
+        if "issues(" in query and "filter" in query:
+            # the board asks for open issues (paged) and closed ones separately
             team = BY_ID.get((variables or {}).get("teamId"), T_CORE)
-            return {"team": {"issues": {"nodes": TEAM_ISSUES[team["id"]]},
-                             "states": {"nodes": states_for(team)}}}
+            closed = "nin:" not in query
+            nodes = [i for i in TEAM_ISSUES[team["id"]]
+                     if (i["state"]["type"] in mod.CLOSED_TYPES) == closed]
+            return {"team": {
+                "issues": {"nodes": nodes,
+                           "pageInfo": {"hasNextPage": False, "endCursor": None}},
+                "states": {"nodes": states_for(team)},
+            }}
         if "members(first" in query:
             return {"team": {"members": {"nodes": [NOVA, KAI, REI]}}}
         if "labels(first: 100" in query:
