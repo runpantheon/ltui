@@ -197,7 +197,7 @@ class DemoShortcut(mod.Shortcut):
         return mod.Listing(ISSUES)
 
     async def detail(self, issue):
-        return {"issue": issue, "comments": mod.Listing(COMMENTS), "children": TASKS}
+        return {"refill": {}, "comments": mod.Listing(COMMENTS), "children": TASKS}
 
     async def workflow_states(self, workflow_id):
         return STATES

@@ -384,21 +384,27 @@ STORY_SUBLISTS = {
 }
 
 
-def normalize_story(s: dict, states: dict[int, dict], labels: dict[int, dict],
-                    viewer_id: str | None) -> dict:
-    """`states` adds the type and position the slim workflow_state lacks; `labels` adds
-    the colour the slim label lacks."""
-    sid = s["id"]
-    title = s.get("name") or ""
-    lists = {key: nested(s, key) for key in STORY_SUBLISTS}
-    owners = lists["owners"]
-    owner = next((o for o in owners if o["id"] == viewer_id), owners[0] if owners else None)
-    assignee = {"id": owner["id"], "displayName": owner.get("name") or "?"} if owner else None
+def sublist_fields(key: str, items: list[dict], story_id: str, labels: dict[int, dict],
+                   viewer_id: str | None) -> dict:
+    """`labels` adds the colour the slim label lacks."""
+    if key == "owners":
+        owner = next((o for o in items if o["id"] == viewer_id), items[0] if items else None)
+        return {
+            "assignee": {"id": owner["id"], "displayName": owner.get("name") or "?"}
+            if owner else None
+        }
+    if key == "labels":
+        nodes = []
+        for l in items:
+            name = l.get("name") or "?"
+            color = l.get("color") or (labels.get(l["id"]) or {}).get("color") or label_color(name)
+            nodes.append({"id": str(l["id"]), "name": name, "color": color})
+        return {"labels": {"nodes": nodes}}
     relations, inverse = [], []
-    for link in lists["story_links"]:
+    for link in items:
         if link.get("verb") != "blocks":
             continue
-        if link["subject"]["id"] == sid:
+        if str(link["subject"]["id"]) == story_id:
             relations.append(
                 {"type": "blocks",
                  "relatedIssue": {"identifier": f"sc-{link['object']['id']}"}}
@@ -408,6 +414,27 @@ def normalize_story(s: dict, states: dict[int, dict], labels: dict[int, dict],
                 {"type": "blocks",
                  "issue": {"identifier": f"sc-{link['subject']['id']}"}}
             )
+    return {"relations": {"nodes": relations}, "inverseRelations": {"nodes": inverse}}
+
+
+def refill_row(issue: dict, refill: dict[str, dict]) -> None:
+    more = issue.get("more") or {}
+    for key, fields in refill.items():
+        if key in more:
+            issue.update(fields)
+            del more[key]
+
+
+def normalize_story(s: dict, states: dict[int, dict], labels: dict[int, dict],
+                    viewer_id: str | None) -> dict:
+    """`states` adds the type and position the slim workflow_state lacks."""
+    sid = s["id"]
+    title = s.get("name") or ""
+    lists = {key: nested(s, key) for key in STORY_SUBLISTS}
+    fields: dict = {}
+    for key, lst in lists.items():
+        fields.update(sublist_fields(key, lst, str(sid), labels, viewer_id))
+    assignee = fields["assignee"]
     slim_state = s.get("workflow_state") or {}
     known = states.get(slim_state.get("id"))
     if known:
@@ -415,11 +442,6 @@ def normalize_story(s: dict, states: dict[int, dict], labels: dict[int, dict],
     else:
         state = {"id": "?", "name": slim_state.get("name") or "Unknown",
                  "color": "#8993a4", "type": "unstarted", "position": 1}
-    label_nodes = []
-    for l in lists["labels"]:
-        name = l.get("name") or "?"
-        color = l.get("color") or (labels.get(l["id"]) or {}).get("color") or label_color(name)
-        label_nodes.append({"id": str(l["id"]), "name": name, "color": color})
     who = slugify(assignee["displayName"]) if assignee else ""
     return {
         "id": str(sid),
@@ -433,10 +455,7 @@ def normalize_story(s: dict, states: dict[int, dict], labels: dict[int, dict],
         "updatedAt": s.get("updated_at") or s.get("created_at") or "1970-01-01T00:00:00Z",
         "createdAt": s.get("created_at") or "1970-01-01T00:00:00Z",
         "state": state,
-        "assignee": assignee,
-        "labels": {"nodes": label_nodes},
-        "relations": {"nodes": relations},
-        "inverseRelations": {"nodes": inverse},
+        **fields,
         "parent": None,
         "project": normalize_epic(s["epic"]) if s.get("epic") else None,
         "workflow_id": (s.get("workflow") or {}).get("id"),
@@ -499,7 +518,7 @@ class Shortcut:
         )
 
     async def detail(self, issue: dict) -> dict:
-        comments, items, whole = await asyncio.gather(
+        comments, items, refill = await asyncio.gather(
             self._list(f"/stories/{issue['id']}/comments",
                        order_by="position", order_dir="desc"),
             self._list(f"/stories/{issue['id']}/checklist-items",
@@ -508,22 +527,26 @@ class Shortcut:
         )
         shown = [normalize_comment(c) for c in comments if not c.get("deleted")]
         return {
-            "issue": whole,
+            "refill": refill,
             "comments": Listing(shown, comments.total - (len(comments) - len(shown))),
             "children": [normalize_task(t) for t in items],
         }
 
-    async def complete(self, issue: dict) -> dict:
-        if not issue.get("more"):
-            return issue
-        story = await self._entity("GET", f"/stories/{issue['id']}",
-                                   params={"fields": STORY_FIELDS})
-        for key, (route, flt) in STORY_SUBLISTS.items():
-            if nested(story, key).more:
-                full = await self._list(f"/stories/{story['id']}/{route}", filter=flt)
-                story[key] = {"entities": full, "total_items": full.total}
-        me, states, labels = await self._lookups()
-        return normalize_story(story, states, labels, me["id"])
+    async def complete(self, issue: dict) -> dict[str, dict]:
+        keys = [key for key in STORY_SUBLISTS if key in (issue.get("more") or {})]
+        if not keys:
+            return {}
+
+        async def whole(key: str) -> Listing[dict]:
+            route, flt = STORY_SUBLISTS[key]
+            return await self._list(f"/stories/{issue['id']}/{route}", filter=flt)
+
+        lists = await asyncio.gather(*map(whole, keys))
+        me, _, labels = await self._lookups()
+        return {
+            key: sublist_fields(key, items, issue["id"], labels, me["id"])
+            for key, items in zip(keys, lists)
+        }
 
     async def workflow_states(self, workflow_id: int) -> list[dict]:
         raw = await self._list(f"/workflows/{workflow_id}/states")
@@ -2001,11 +2024,6 @@ class SCTUI(App):
             connected,
         )
 
-    def _merge(self, issue: dict, fresh: dict) -> None:
-        if fresh is not issue:
-            issue.clear()
-            issue.update(fresh)
-
     def _start(self, token: str) -> None:
         self.sc = self.connect(token)
         # render instantly from cache, then refresh live data concurrently
@@ -2179,7 +2197,12 @@ class SCTUI(App):
             fresh = self._issue_by_id.get(self._detail_issue["id"])
             if fresh is not None:
                 self._detail_issue = fresh
-                self._update_detail_meta(fresh)
+                try:
+                    refill_row(fresh, await self.sc.complete(fresh))
+                except Exception as e:
+                    self.notify(f"shortcut: {e}", severity="error", timeout=10)
+                if self._detail_issue is fresh:
+                    self._update_detail_meta(fresh)
 
     # NOT named _auto_refresh: textual's DOMNode owns that instance attribute
     # (backing field of the auto_refresh property) and would shadow the method
@@ -2218,10 +2241,11 @@ class SCTUI(App):
             return
         if self._detail_issue is None or self._detail_issue["id"] != issue["id"]:
             return
-        self._merge(issue, detail["issue"])
-        self._update_detail_meta(issue)
+        live_row = self._detail_issue
+        refill_row(live_row, detail["refill"])
+        self._update_detail_meta(live_row)
         # parent + sub-issues context (old caches / demo stubs lack the keys)
-        parent = issue.get("parent")
+        parent = live_row.get("parent")
         if parent:
             line = Text(no_wrap=True, overflow="ellipsis")
             line.append("\uf148 parent ", style=C_DIM)
@@ -2348,6 +2372,7 @@ class SCTUI(App):
             self.notify(f"update failed: {e}", severity="error")
             return
         issue["assignee"] = new_assignee
+        (issue.get("more") or {}).pop("owners", None)
         self._write_team_cache()
         self.render_issues(keep=issue["id"])
         if self._detail_issue and self._detail_issue["id"] == issue["id"]:
@@ -2884,7 +2909,7 @@ class SCTUI(App):
     async def open_labels(self, issue: dict) -> None:
         try:
             # the board row may hold only the first page of the story's labels
-            self._merge(issue, await self.sc.complete(issue))
+            refill_row(issue, await self.sc.complete(issue))
             labels = await self.sc.labels()
         except Exception as e:
             self.notify(f"shortcut: {e}", severity="error")
@@ -2919,6 +2944,7 @@ class SCTUI(App):
             self.notify(f"update failed: {e}", severity="error")
             return
         issue["labels"] = {"nodes": labels}
+        (issue.get("more") or {}).pop("labels", None)
         self._write_team_cache()
         self.render_issues(keep=issue["id"])
         if self._detail_issue and self._detail_issue["id"] == issue["id"]:
