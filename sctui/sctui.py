@@ -906,10 +906,13 @@ def save_state(data: dict) -> None:
         pass
 
 
+def cache_file(name: str) -> Path:
+    return CACHE_DIR / f"{name}.v{CACHE_VERSION}.json"
+
+
 def read_cache(name: str) -> dict | None:
     try:
-        raw = json.loads((CACHE_DIR / f"{name}.json").read_text())
-        return raw["data"] if raw.get("v") == CACHE_VERSION else None
+        return json.loads(cache_file(name).read_text())
     except Exception:
         return None
 
@@ -917,7 +920,7 @@ def read_cache(name: str) -> dict | None:
 def write_cache(name: str, data: dict) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (CACHE_DIR / f"{name}.json").write_text(json.dumps({"v": CACHE_VERSION, "data": data}))
+        cache_file(name).write_text(json.dumps(data))
     except Exception:
         pass
 
