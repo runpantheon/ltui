@@ -266,6 +266,9 @@ class DemoApp(LTUI):
             ids = (variables or {}).get("labelIds", [])
             all_l = {l["id"]: l for l in (L_BUG, L_FEAT, L_INFRA, L_UX)}
             return {"issueUpdate": {"success": True, "issue": {"id": (variables or {}).get("id"), "labels": {"nodes": [all_l[i] for i in ids if i in all_l]}}}}
+        if "description" in query and "issueUpdate" in query:
+            v = variables or {}
+            return {"issueUpdate": {"success": True, "issue": {"id": v.get("id"), "description": v.get("description", ""), "updatedAt": "2026-09-14T00:00:00.000Z"}}}
         if "projectId" in query and "issueUpdate" in query:
             pid = (variables or {}).get("projectId")
             all_p = {p["id"]: p for p in (P_SYNC, P_POLISH, P_INFRA)}

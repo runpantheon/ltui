@@ -156,6 +156,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `l`      | edit **labels** (multi-select)                |
 | `P`      | move to a **project** — or create one inline  |
 | `c`      | add a **comment** (`ctrl+s` to send)          |
+| `e`      | edit the **description** in `$VISUAL` / `$EDITOR` (in-app box if unset) |
 | `o`      | open ticket in **browser**                    |
 | `y`      | **yank** — copy branch name / url / id        |
 | `x`      | **run your custom script** on the ticket — [add more](#more-scripts) |
