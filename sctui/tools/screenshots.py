@@ -99,10 +99,16 @@ COMMENTS = [
 
 PARENT = None  # shortcut stories have no parent
 
-TASKS = [
-    {"complete": True, "description": "design review"},
-    {"complete": False, "description": "scheduler swap behind flag"},
-]
+def task(title, done):
+    return {
+        "identifier": "" if done else "○",
+        "title": title,
+        "state": {"id": "t", "name": "task", "color": mod.C_GREEN if done else mod.C_SUB,
+                  "type": "completed" if done else "unstarted", "position": 1},
+    }
+
+
+TASKS = [task("design review", True), task("scheduler swap behind flag", False)]
 
 
 P_SYNC = {"id": "p-sync", "name": "Sync Engine v2", "color": "#89b4fa"}
@@ -173,59 +179,38 @@ BOOT = {
 }
 
 
-class DemoApp(SCTUI):
-    async def api(self, method, path, **kwargs):
-        await asyncio.sleep(0.02)
-        if path.endswith("/v3/member"):
-            return {"id": "u-nova", "name": "nova", "mention_name": "nova"}
-        if path.endswith("/v3/groups"):
-            return [{"id": t["id"], "name": t["name"], "mention_name": t["key"].lower(), "archived": False} for t in TEAMS]
-        if path.endswith("/v3/workflows"):
-            return [{"id": 1, "states": [
-                {"id": 1, "name": "Backlog", "type": "backlog", "position": 0},
-                {"id": 2, "name": "To Do", "type": "unstarted", "position": 1},
-                {"id": 3, "name": "In Progress", "type": "started", "position": 2},
-                {"id": 4, "name": "In Review", "type": "started", "position": 3},
-                {"id": 5, "name": "Done", "type": "done", "position": 4},
-            ]}]
-        if path.endswith("/v3/members"):
-            return [{"id": u["id"], "profile": {"name": u["displayName"], "mention_name": u["displayName"]}} for u in (NOVA, KAI, REI)]
-        if path.endswith("/v3/labels"):
-            return [
-                {"id": 11, "name": "bug", "color": "#f38ba8", "archived": False},
-                {"id": 12, "name": "feature", "color": "#89b4fa", "archived": False},
-                {"id": 13, "name": "infra", "color": "#a6e3a1", "archived": False},
-                {"id": 14, "name": "design", "color": "#cba6f7", "archived": False},
-            ]
-        if path.endswith("/v3/epics") and method == "POST":
-            return {"id": 99, "name": (kwargs.get("json") or {}).get("name") or "epic"}
-        if path.endswith("/v3/epics"):
-            return [
-                {"id": 1, "name": P_SYNC["name"], "archived": False},
-                {"id": 2, "name": P_POLISH["name"], "archived": False},
-                {"id": 3, "name": P_INFRA["name"], "archived": False},
-            ]
-        if "/stories/" in path and path.endswith("/comments"):
-            return {}
-        if "/stories/" in path and method == "GET":
-            return {"description": DESC, "tasks": TASKS, "comments": [
-                {"id": 1, "text": c["body"], "created_at": c["createdAt"], "author_id": "u-" + c["user"]["displayName"]}
-                for c in COMMENTS
-            ]}
-        if "/stories/" in path and method == "PUT" and (
-            "labels" in (kwargs.get("json") or {}) or "epic_id" in (kwargs.get("json") or {})
-        ):
-            return {}
-        return {}
+class DemoShortcut(mod.Shortcut):
+    def __init__(self):
+        self._memo = {}
 
-    async def fetch_issues(self, project_key):
-        await asyncio.sleep(0.02)
-        await self._lookups()  # populate maps for pickers/create
-        return ISSUES  # already in normalized shape
+    async def _request(self, method, path, *, params=None, json=None):
+        raise AssertionError(f"the demo makes no network calls ({method} {path})")
+
+    async def whoami(self):
+        return {**BOOT["viewer"], "slug": BOOT["organization"]["name"],
+                "default_state_id": None, "scopes": ["read", "write"]}
+
+    async def teams(self):
+        return mod.Listing(TEAMS)
+
+    async def board(self, team_id):
+        return mod.Listing(ISSUES)
+
+    async def detail(self, issue):
+        return {"issue": issue, "comments": COMMENTS, "children": TASKS}
+
+    async def workflow_states(self, workflow_id):
+        return STATES
+
+
+class DemoApp(SCTUI):
+    def connect(self, token):
+        return DemoShortcut()
+
 
 
 def patch(theme="mocha"):
-    mod.load_token = lambda: "demo-token"
+    mod.load_token = lambda: mod.SavedToken("sct_rw_demo_x", "file")
     mod.read_cache = lambda name: None
     mod.write_cache = lambda name, data: None
     mod.load_state = lambda: {"theme": theme, "mine": False, "team_id": "CORE", "welcomed": True}

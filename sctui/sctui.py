@@ -12,12 +12,17 @@ from __future__ import annotations
 
 __version__ = "0.3.0"
 
+import asyncio
 import json
+import math
 import sys
 import tomllib
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import (Any, Awaitable, Callable, Generic, Iterable, Literal, NamedTuple,
+                    TypedDict, TypeVar)
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from rich.markup import escape
@@ -38,7 +43,14 @@ SCTUI_JSON_CONFIG = Path.home() / ".config/sctui/config.json"
 STATE_FILE = Path.home() / ".local/state/sctui/state.json"
 CACHE_DIR = Path.home() / ".cache/sctui"
 API_BASE = "https://api.app.shortcut.com"
+API_ROOT = "/api/v4"
+PAGE_SIZE = 100  # v4's maximum
+BOARD_CAP = 200
+LIST_CAP = 500
+CACHE_VERSION = 2
 AUTO_REFRESH_SECONDS = 180
+
+T = TypeVar("T")
 
 # ── palette (catppuccin mocha) ────────────────────────────────────────────
 C_TEXT = "#cdd6f4"
@@ -198,7 +210,7 @@ PRIORITIES = [(1, "bug"), (3, "feature"), (4, "chore")]
 
 # ── graphql ───────────────────────────────────────────────────────────────
 # ── shortcut data layer ───────────────────────────────────────────────────
-# Shortcut REST v3 (markdown everywhere). Everything the UI touches is a
+# Shortcut REST v4 (markdown everywhere). Everything the UI touches is a
 # *normalized* dict in the renderer's shape:
 #   identifier sc-N, title, description(md), url, priority(=story type),
 #   branchName, updatedAt, createdAt, state{id,name,color,type,position},
@@ -233,6 +245,65 @@ def slugify(text: str, limit: int = 48) -> str:
     return "".join(out).strip("-")[:limit].rstrip("-")
 
 
+class Listing(list, Generic[T]):
+    def __init__(self, items: Iterable[T] = (), total: int | None = None) -> None:
+        super().__init__(items)
+        self.total = len(self) if total is None else total
+
+    @property
+    def more(self) -> int:
+        return max(self.total - len(self), 0)
+
+
+class StoryPatch(TypedDict, total=False):
+    workflow_state_id: int
+    story_type: Literal["feature", "bug", "chore"]
+    owner_ids: list[str]
+    label_ids_add: list[int]
+    label_ids_remove: list[int]
+    epic_id: int | None
+
+
+class ApiError(RuntimeError):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"{status}: {detail}")
+        self.status = status
+
+
+class AuthError(ApiError):
+    pass
+
+
+ERROR_PHRASES = {
+    400: "Shortcut rejected the request",
+    401: "authentication failed - check the token",
+    403: "this token is not allowed to do that",
+    404: "not found",
+    422: "Shortcut could not process the request",
+    429: "rate limited - try again in a minute",
+}
+
+
+def error_detail(status: int, body: Any) -> str:
+    if isinstance(body, dict) and isinstance(body.get("message"), str) and body["message"]:
+        return body["message"]
+    if isinstance(body, str) and body.strip():
+        return body.strip()[:120]
+    return ERROR_PHRASES.get(status, "request failed")
+
+
+def nested(entity: dict, key: str) -> Listing[dict]:
+    lst = entity.get(key) or {}
+    return Listing(lst.get("entities") or [], lst.get("total_items"))
+
+
+def next_cursor(page: dict) -> str | None:
+    url = page.get("next_page_url")
+    if not url:
+        return None
+    return (parse_qs(urlsplit(url).query).get("cursor") or [None])[0]
+
+
 def normalize_state(state: dict) -> dict:
     """A Shortcut workflow state -> renderer state dict."""
     stype = state.get("type", "unstarted")
@@ -247,69 +318,344 @@ def normalize_state(state: dict) -> dict:
     }
 
 
-def normalize_story(s: dict, state_map: dict, epic_map: dict,
-                    member_map: dict, viewer_id: str | None) -> dict:
-    sid = s.get("id")
-    key = f"sc-{sid}"
+def normalize_epic(epic: dict) -> dict:
+    name = epic.get("name") or f"epic {epic['id']}"
+    return {"id": str(epic["id"]), "name": name, "color": label_color(name)}
+
+
+def normalize_label(label: dict) -> dict:
+    name = label.get("name") or "?"
+    return {"id": str(label["id"]), "name": name, "color": label.get("color") or label_color(name)}
+
+
+def normalize_team(team: dict) -> dict:
+    name = team.get("name") or "team"
+    return {
+        "id": team["id"],
+        "name": name,
+        "key": (team.get("mention_name") or name)[:8],
+        "color": label_color(name),
+        "workflow_id": (team.get("default_workflow") or {}).get("id"),
+    }
+
+
+def normalize_comment(comment: dict) -> dict:
+    """`text` is null on a deleted comment."""
+    return {
+        "id": str(comment.get("id") or ""),
+        "body": comment.get("text") or "",
+        "createdAt": comment.get("created_at") or "1970-01-01T00:00:00Z",
+        "user": {"displayName": (comment.get("author") or {}).get("name") or "unknown"},
+        "botActor": None,
+    }
+
+
+def normalize_task(item: dict) -> dict:
+    done = bool(item.get("completed"))
+    return {
+        "identifier": "" if done else "○",
+        "title": item.get("description") or "",
+        "state": {
+            "id": "t", "name": "task",
+            "color": C_GREEN if done else C_SUB,
+            "type": "completed" if done else "unstarted",
+            "position": 1,
+        },
+    }
+
+
+STORY_FIELDS = (
+    "id,name,description,app_url,story_type,created_at,updated_at,"
+    "workflow_state,workflow,epic,owners,labels,story_links,"
+    "formatted_vcs_branch_name"
+)
+
+STORY_SUBLISTS = {
+    "owners": ("owners", "include_disabled"),
+    "labels": ("labels", "include_archived"),
+    "story_links": ("story-links", "all"),
+}
+
+
+def normalize_story(s: dict, states: dict[int, dict], labels: dict[int, dict],
+                    viewer_id: str | None) -> dict:
+    """`states` adds the type and position the slim workflow_state lacks; `labels` adds
+    the colour the slim label lacks."""
+    sid = s["id"]
     title = s.get("name") or ""
-    # owners: prefer the viewer if they're one, else the first owner
-    owners = s.get("owner_ids") or []
-    owner_id = viewer_id if viewer_id in owners else (owners[0] if owners else None)
-    assignee = None
-    if owner_id:
-        assignee = {
-            "id": owner_id,
-            "displayName": member_map.get(owner_id, {}).get("displayName", "?"),
-        }
+    lists = {key: nested(s, key) for key in STORY_SUBLISTS}
+    owners = lists["owners"]
+    owner = next((o for o in owners if o["id"] == viewer_id), owners[0] if owners else None)
+    assignee = {"id": owner["id"], "displayName": owner.get("name") or "?"} if owner else None
     relations, inverse = [], []
-    for link in s.get("story_links") or []:
+    for link in lists["story_links"]:
         if link.get("verb") != "blocks":
             continue
-        if link.get("type") == "subject":
+        if link["subject"]["id"] == sid:
             relations.append(
                 {"type": "blocks",
-                 "relatedIssue": {"identifier": f"sc-{link.get('object_id')}"}}
+                 "relatedIssue": {"identifier": f"sc-{link['object']['id']}"}}
             )
         else:
             inverse.append(
                 {"type": "blocks",
-                 "issue": {"identifier": f"sc-{link.get('subject_id')}"}}
+                 "issue": {"identifier": f"sc-{link['subject']['id']}"}}
             )
-    epic = None
-    if s.get("epic_id") and s["epic_id"] in epic_map:
-        epic = {
-            "id": str(s["epic_id"]),
-            "name": epic_map[s["epic_id"]],
-            "color": label_color(epic_map[s["epic_id"]]),
-        }
-    mention = member_map.get(owner_id or "", {}).get("mention", "story")
+    slim_state = s.get("workflow_state") or {}
+    known = states.get(slim_state.get("id"))
+    if known:
+        state = {**known, "name": slim_state.get("name") or known["name"]}
+    else:
+        state = {"id": "?", "name": slim_state.get("name") or "Unknown",
+                 "color": "#8993a4", "type": "unstarted", "position": 1}
+    label_nodes = []
+    for l in lists["labels"]:
+        name = l.get("name") or "?"
+        color = l.get("color") or (labels.get(l["id"]) or {}).get("color") or label_color(name)
+        label_nodes.append({"id": str(l["id"]), "name": name, "color": color})
+    who = slugify(assignee["displayName"]) if assignee else ""
     return {
         "id": str(sid),
-        "identifier": key,
+        "identifier": f"sc-{sid}",
         "title": title,
         "description": s.get("description") or None,
         "url": s.get("app_url") or f"https://app.shortcut.com/story/{sid}",
         "priority": TYPE_PRIORITY.get(s.get("story_type", ""), 0),
-        "branchName": f"{mention}/sc-{sid}/{slugify(title)}",
+        "branchName": s.get("formatted_vcs_branch_name")
+        or f"{who or 'story'}/sc-{sid}/{slugify(title)}",
         "updatedAt": s.get("updated_at") or s.get("created_at") or "1970-01-01T00:00:00Z",
         "createdAt": s.get("created_at") or "1970-01-01T00:00:00Z",
-        "state": state_map.get(
-            s.get("workflow_state_id"),
-            {"id": "?", "name": "Unknown", "color": "#8993a4",
-             "type": "unstarted", "position": 1},
-        ),
+        "state": state,
         "assignee": assignee,
-        "labels": {"nodes": [
-            {"name": l.get("name", "?"), "color": l.get("color") or label_color(l.get("name", "?"))}
-            for l in s.get("labels") or []
-        ]},
+        "labels": {"nodes": label_nodes},
         "relations": {"nodes": relations},
         "inverseRelations": {"nodes": inverse},
         "parent": None,
-        "project": epic,
-        "subtasks": [],
-        "workflow_id": s.get("workflow_id"),
+        "project": normalize_epic(s["epic"]) if s.get("epic") else None,
+        "workflow_id": (s.get("workflow") or {}).get("id"),
+        "more": {key: lst.more for key, lst in lists.items() if lst.more},
     }
+
+
+# ── shortcut client ───────────────────────────────────────────────────────
+class Shortcut:
+    def __init__(self, token: str, *, on_unauthorized: Callable[[], None] | None = None) -> None:
+        self._http = httpx.AsyncClient(
+            base_url=API_BASE,
+            timeout=20,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        self._memo: dict[str, asyncio.Future] = {}
+        self._on_unauthorized = on_unauthorized
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+    async def whoami(self) -> dict:
+        async def fetch() -> dict:
+            me = await self._entity("GET", "/whoami")
+            slug = (me.get("workspace") or {}).get("slug")
+            if not slug:
+                raise ApiError(502, "whoami returned no workspace slug")
+            member = me.get("member") or {}
+            return {
+                "id": member.get("id", ""),
+                "displayName": member.get("name") or member.get("mention_name") or "me",
+                "slug": slug,
+                "default_state_id": (me.get("default_workflow_state") or {}).get("id"),
+                "scopes": (me.get("authorization") or {}).get("scopes") or [],
+            }
+
+        return await self._once("whoami", fetch)
+
+    async def teams(self) -> Listing[dict]:
+        raw = await self._list("/teams")
+        return Listing(map(normalize_team, raw), raw.total)
+
+    async def board(self, team_id: str) -> Listing[dict]:
+        me, states, labels = await self._lookups()
+        stories = await self._list(
+            f"/teams/{team_id}/stories", cap=BOARD_CAP,
+            order_by="updated_at", order_dir="desc", fields=STORY_FIELDS,
+        )
+        if any((s.get("workflow_state") or {}).get("id") not in states for s in stories):
+            self._memo.pop("states", None)
+            me, states, labels = await self._lookups()
+        if any(l["id"] not in labels for s in stories for l in nested(s, "labels")):
+            self._memo.pop("labels", None)
+        return Listing(
+            [normalize_story(s, states, labels, me["id"]) for s in stories], stories.total
+        )
+
+    async def detail(self, issue: dict) -> dict:
+        comments, items, whole = await asyncio.gather(
+            self._list(f"/stories/{issue['id']}/comments"),
+            self._list(f"/stories/{issue['id']}/checklist-items",
+                       order_by="position", order_dir="asc"),
+            self.complete(issue),
+        )
+        return {
+            "issue": whole,
+            "comments": [normalize_comment(c) for c in comments],
+            "children": [normalize_task(t) for t in items],
+        }
+
+    async def complete(self, issue: dict) -> dict:
+        if not issue.get("more"):
+            return issue
+        story = await self._entity("GET", f"/stories/{issue['id']}",
+                                   params={"fields": STORY_FIELDS})
+        for key, (route, flt) in STORY_SUBLISTS.items():
+            if nested(story, key).more:
+                full = await self._list(f"/stories/{story['id']}/{route}", filter=flt)
+                story[key] = {"entities": full, "total_items": full.total}
+        me, states, labels = await self._lookups()
+        return normalize_story(story, states, labels, me["id"])
+
+    async def workflow_states(self, workflow_id: int) -> list[dict]:
+        raw = await self._list(f"/workflows/{workflow_id}/states")
+        return [normalize_state(s) for s in raw]
+
+    async def labels(self) -> list[dict]:
+        raw = await self._once("labels", self._fetch_labels)
+        return [normalize_label(l) for l in raw if not l.get("archived")]
+
+    async def epics(self) -> Listing[dict]:
+        raw = await self._list("/epics")
+        return Listing(map(normalize_epic, raw), raw.total)
+
+    async def members(self) -> Listing[dict]:
+        raw = await self._list("/members")
+        return Listing(
+            [{"id": m["id"], "displayName": m.get("name") or m.get("mention_name") or "?"}
+             for m in raw],
+            raw.total,
+        )
+
+    async def create_story(self, team: dict, title: str, description: str | None) -> dict:
+        body = {
+            "name": title,
+            "team_id": team["id"],
+            "workflow_state_id": await self._default_state_id(team),
+            "story_type": "feature",
+        }
+        if description:
+            body["description"] = description
+        created = await self._entity("POST", "/stories", json=body)
+        me, states, labels = await self._lookups()
+        return normalize_story(created, states, labels, me["id"])
+
+    async def move_story(self, story_id: str, state_id: str) -> None:
+        await self._patch_story(story_id, {"workflow_state_id": int(state_id)})
+
+    async def set_story_type(self, story_id: str, story_type: str) -> None:
+        await self._patch_story(story_id, {"story_type": story_type})
+
+    async def assign_story(self, story_id: str, member_id: str | None) -> None:
+        await self._patch_story(story_id, {"owner_ids": [member_id] if member_id else []})
+
+    async def relabel_story(self, story_id: str, *, add: Iterable[str],
+                            remove: Iterable[str]) -> None:
+        body: StoryPatch = {}
+        if ids := sorted(int(i) for i in add):
+            body["label_ids_add"] = ids
+        if ids := sorted(int(i) for i in remove):
+            body["label_ids_remove"] = ids
+        await self._patch_story(story_id, body)
+
+    async def set_story_epic(self, story_id: str, epic_id: str | None) -> None:
+        await self._patch_story(
+            story_id, {"epic_id": int(epic_id) if epic_id is not None else None}
+        )
+
+    async def add_comment(self, story_id: str, text: str) -> None:
+        await self._request("POST", f"/stories/{story_id}/comments", json={"text": text})
+
+    async def create_epic(self, name: str) -> dict:
+        return normalize_epic(await self._entity("POST", "/epics", json={"name": name}))
+
+    async def _request(self, method: str, path: str, *, params: dict | None = None,
+                       json: dict | None = None) -> Any:
+        prefix = API_ROOT if path == "/whoami" else f"{API_ROOT}/{(await self.whoami())['slug']}"
+        resp = await self._http.request(method, prefix + path, params=params, json=json)
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = resp.text
+            detail = error_detail(resp.status_code, body)
+            if resp.status_code == 401:
+                if self._on_unauthorized is not None:
+                    hook, self._on_unauthorized = self._on_unauthorized, None
+                    hook()
+                raise AuthError(401, detail)
+            raise ApiError(resp.status_code, detail)
+        if resp.status_code == 204 or not resp.content:
+            return None
+        return resp.json()
+
+    async def _entity(self, method: str, path: str, *, params: dict | None = None,
+                      json: dict | None = None) -> dict:
+        return (await self._request(method, path, params=params, json=json))["entity"]
+
+    async def _list(self, path: str, *, cap: int = LIST_CAP, **params: str) -> Listing[dict]:
+        query: dict = {"limit": min(PAGE_SIZE, cap), **params}
+        items: list[dict] = []
+        total = 0
+        for _ in range(math.ceil(cap / PAGE_SIZE)):
+            page = await self._request("GET", path, params=query)
+            items += page["entities"]
+            total = page.get("total_items", len(items))
+            cursor = next_cursor(page)
+            if cursor is None or len(items) >= cap or not page["entities"]:
+                break
+            # v4 rejects a cursor sent with any parameter other than `fields`
+            query = {"cursor": cursor}
+            if "fields" in params:
+                query["fields"] = params["fields"]
+        return Listing(items[:cap], total)
+
+    async def _once(self, key: str, fetch: Callable[[], Awaitable[T]]) -> T:
+        task = self._memo.get(key)
+        if task is None or (task.done() and (task.cancelled() or task.exception())):
+            task = self._memo[key] = asyncio.ensure_future(fetch())
+        # Textual cancels exclusive workers; one cancelled caller must not cancel the
+        # fetch the others are waiting on
+        return await asyncio.shield(task)
+
+    async def _fetch_labels(self) -> Listing[dict]:
+        # a story can still carry an archived label, so its colour must be known
+        return await self._list("/labels", filter="include_archived")
+
+    async def _lookups(self) -> tuple[dict, dict[int, dict], dict[int, dict]]:
+        me, states, labels = await asyncio.gather(
+            self.whoami(),
+            self._once("states", lambda: self._list("/workflow-states")),
+            self._once("labels", self._fetch_labels),
+        )
+        return (
+            me,
+            {s["id"]: normalize_state(s) for s in states},
+            {l["id"]: normalize_label(l) for l in labels},
+        )
+
+    async def _patch_story(self, story_id: str, body: StoryPatch) -> None:
+        await self._request("PATCH", f"/stories/{story_id}", json=body)
+
+    async def _default_state_id(self, team: dict) -> int:
+        """Create requires a workflow_state_id."""
+        state_id = None
+        if (wid := team.get("workflow_id")) is not None:
+            async def fetch() -> int | None:
+                wf = await self._entity("GET", f"/workflows/{wid}")
+                return (wf.get("default_workflow_state") or {}).get("id")
+
+            state_id = await self._once(f"default-state:{wid}", fetch)
+        if state_id is None:
+            state_id = (await self.whoami())["default_state_id"]
+        if state_id is None:
+            raise ApiError(422, "this team has no default workflow state")
+        return state_id
 
 
 def load_user_config() -> dict:
@@ -419,12 +765,30 @@ CONFIG_TEMPLATE = """{
 """
 
 
-def load_token() -> str:
+class SavedToken(NamedTuple):
+    token: str
+    source: Literal["env", "file"]
+
+
+TOKEN_SOURCE = {"env": "SHORTCUT_API_TOKEN", "file": "~/.config/sctui/config.toml"}
+
+
+def is_v4_token(token: str) -> bool:
+    return token.startswith("sct_")
+
+
+def load_token() -> SavedToken:
     import os
 
+    found = []
     if token := os.environ.get("SHORTCUT_API_TOKEN"):
-        return token
-    return str(tomllib.loads(SCTUI_CONFIG.read_text())["token"])
+        found.append(SavedToken(token, "env"))
+    try:
+        found.append(SavedToken(str(tomllib.loads(SCTUI_CONFIG.read_text())["token"]), "file"))
+    except Exception:
+        if not found:
+            raise
+    return next((t for t in found if is_v4_token(t.token)), found[0])
 
 
 def save_token(token: str) -> None:
@@ -435,16 +799,15 @@ def save_token(token: str) -> None:
 
 async def verify_token(token: str) -> str:
     """Check the token against Shortcut; returns the member name or raises."""
-    async with httpx.AsyncClient(
-        headers={"Shortcut-Token": token, "Accept": "application/json"},
-        timeout=15,
-    ) as client:
-        resp = await client.get(f"{API_BASE}/api/v3/member")
-        if resp.status_code == 401:
-            raise RuntimeError("authentication failed - check the token")
-        resp.raise_for_status()
-        me = resp.json()
-        return me.get("name") or me.get("mention_name") or "connected"
+    if not is_v4_token(token):
+        raise RuntimeError("that is a v3 token - v4 tokens start with sct_")
+    sc = Shortcut(token)
+    try:
+        return (await sc.whoami())["displayName"]
+    except AuthError:
+        raise RuntimeError("authentication failed - check the token") from None
+    finally:
+        await sc.aclose()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -545,7 +908,8 @@ def save_state(data: dict) -> None:
 
 def read_cache(name: str) -> dict | None:
     try:
-        return json.loads((CACHE_DIR / f"{name}.json").read_text())
+        raw = json.loads((CACHE_DIR / f"{name}.json").read_text())
+        return raw["data"] if raw.get("v") == CACHE_VERSION else None
     except Exception:
         return None
 
@@ -553,7 +917,7 @@ def read_cache(name: str) -> dict | None:
 def write_cache(name: str, data: dict) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (CACHE_DIR / f"{name}.json").write_text(json.dumps(data))
+        (CACHE_DIR / f"{name}.json").write_text(json.dumps({"v": CACHE_VERSION, "data": data}))
     except Exception:
         pass
 
@@ -849,17 +1213,23 @@ class OnboardModal(ModalScreen):
 
     BINDINGS = [Binding("escape", "quit_app", show=False)]
 
+    def __init__(self, notice: str | None = None) -> None:
+        super().__init__()
+        self._notice = notice
+
     def compose(self) -> ComposeResult:
         with Vertical(id="onboard-box"):
             yield Static(
                 f"[bold {C_BLUE}]\uf022  welcome to sctui[/]", id="onboard-title"
             )
+            notice = f"[{C_PEACH}]{escape(self._notice)}[/]\n\n" if self._notice else ""
             yield Static(
-                f"[{C_SUB}]sctui talks to Shortcut with an API token.[/]\n\n"
+                notice
+                + f"[{C_SUB}]sctui talks to Shortcut's v4 API with an API token.[/]\n\n"
                 f"[{C_DIM}]1.[/] [{C_SUB}]open[/] "
                 f"[@click=screen.open_keys][{C_BLUE}]Shortcut \u2192 Settings \u2192 API Tokens[/][/] "
                 f"[{C_DIM}](click it)[/]\n"
-                f"[{C_DIM}]2.[/] [{C_SUB}]generate a token[/]\n"
+                f"[{C_DIM}]2.[/] [{C_SUB}]generate a read + write token (it begins with sct_rw_)[/]\n"
                 f"[{C_DIM}]3.[/] [{C_SUB}]paste it below and hit enter[/]",
                 id="onboard-body",
             )
@@ -1445,12 +1815,12 @@ class SCTUI(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.client: httpx.AsyncClient | None = None
+        self.sc: Shortcut | None = None
+        self._token_source = "file"
         self._teams: list[dict] = []
         self._issues: list[dict] = []
         self._states: list[dict] = []
         self._members: dict[str, list] = {}
-        self._workspace_labels: list | None = None  # workspace-level in Shortcut
         self._workspace_epics: list | None = None
         self._team: dict | None = None
         self._viewer_id: str | None = None
@@ -1554,27 +1924,69 @@ class SCTUI(App):
         self.set_interval(FX_TICK, self._tick_fx)
         self.query_one("#issues").focus()
         try:
-            token = load_token()
+            saved = load_token()
         except Exception:
-            def connected(new_token: str | None) -> None:
-                if not new_token:
-                    return
-                try:
-                    save_token(new_token)
-                except Exception as e:
-                    self.notify(f"couldn't save token: {e}", severity="error")
-                self._start(new_token)
-
-            self.push_screen(OnboardModal(), connected)
+            saved = None
+        if saved is not None and is_v4_token(saved.token):
+            self._token_source = saved.source
+            self._start(saved.token)
             return
-        self._start(token)
+
+        def connected(new_token: str | None) -> None:
+            if not new_token:
+                return
+            try:
+                save_token(new_token)
+            except Exception as e:
+                self.notify(f"couldn't save token: {e}", severity="error")
+            self._start(new_token)
+
+        notice = None
+        if saved is not None:
+            notice = (
+                f"the token in {TOKEN_SOURCE[saved.source]} is a v3 token. sctui now "
+                "uses Shortcut's v4 API, which needs a new token."
+            )
+        self.push_screen(OnboardModal(notice), connected)
+
+    def connect(self, token: str) -> Shortcut:
+        return Shortcut(token, on_unauthorized=self._reauth)
+
+    def _reauth(self) -> None:
+        if any(isinstance(s, OnboardModal) for s in self.screen_stack):
+            return
+
+        def connected(new_token: str | None) -> None:
+            if not new_token:
+                return
+            try:
+                save_token(new_token)
+            except Exception as e:
+                self.notify(f"couldn't save token: {e}", severity="error")
+            self._token_source = "file"
+            # the new token may belong to another workspace
+            clear_cache()
+            self._members = {}
+            self._workspace_epics = None
+            old, self.sc = self.sc, self.connect(new_token)
+            if old is not None:
+                self.run_worker(old.aclose(), exit_on_error=False)
+            self.boot()
+
+        self.push_screen(
+            OnboardModal(
+                f"Shortcut rejected the token from {TOKEN_SOURCE[self._token_source]}."
+            ),
+            connected,
+        )
+
+    def _merge(self, issue: dict, fresh: dict) -> None:
+        if fresh is not issue:
+            issue.clear()
+            issue.update(fresh)
 
     def _start(self, token: str) -> None:
-        self.client = httpx.AsyncClient(
-            base_url=API_BASE,
-            headers={"Shortcut-Token": token, "Accept": "application/json"},
-            timeout=20,
-        )
+        self.sc = self.connect(token)
         # render instantly from cache, then refresh live data concurrently
         team = None
         if boot_cache := read_cache("boot"):
@@ -1600,59 +2012,6 @@ class SCTUI(App):
             save_state(data)
 
         self.push_screen(WelcomeModal(), done)
-
-    # ── api ───────────────────────────────────────────────────────────
-    async def api(self, method: str, path: str, **kwargs):
-        """One Shortcut REST call; raises RuntimeError with the API message."""
-        resp = await self.client.request(method, path, **kwargs)
-        if resp.status_code >= 400:
-            try:
-                err = resp.json()
-                msgs = err.get("errorMessages") or []
-                msgs += [f"{k}: {v}" for k, v in (err.get("errors") or {}).items()]
-                detail = "; ".join(msgs) or resp.text[:120]
-            except Exception:
-                detail = resp.text[:120]
-            raise RuntimeError(f"{resp.status_code}: {detail}")
-        if resp.status_code == 204 or not resp.content:
-            return None
-        return resp.json()
-
-    async def _lookups(self) -> tuple[dict, dict, dict]:
-        """(state_map, epic_map, member_map) — fetched fresh, kept on self."""
-        workflows = await self.api("GET", "/api/v3/workflows") or []
-        state_map = {}
-        for wf in workflows:
-            for st in wf.get("states", []):
-                state_map[st["id"]] = normalize_state(st)
-        epics = await self.api("GET", "/api/v3/epics") or []
-        epic_map = {e["id"]: e.get("name", f"epic {e['id']}") for e in epics}
-        members = await self.api("GET", "/api/v3/members") or []
-        member_map = {
-            m["id"]: {
-                "displayName": (m.get("profile") or {}).get("name")
-                or (m.get("profile") or {}).get("mention_name", "?"),
-                "mention": (m.get("profile") or {}).get("mention_name", "dev"),
-            }
-            for m in members
-        }
-        self._state_map = state_map
-        self._epic_map = epic_map
-        self._member_map = member_map
-        return state_map, epic_map, member_map
-
-    async def fetch_issues(self, project_key: str) -> list[dict]:
-        state_map, epic_map, member_map = await self._lookups()
-        stories = await self.api(
-            "POST",
-            "/api/v3/stories/search",
-            json={"group_id": project_key, "archived": False},
-        ) or []
-        stories.sort(key=lambda s: s.get("updated_at") or "", reverse=True)
-        return [
-            normalize_story(s, state_map, epic_map, member_map, self._viewer_id)
-            for s in stories[:200]
-        ]
 
     # ── workers ───────────────────────────────────────────────────────
     def _render_boot(self, data: dict) -> None:
@@ -1686,27 +2045,19 @@ class SCTUI(App):
         if pick_team:
             issues_list.loading = True
         try:
-            me = await self.api("GET", "/api/v3/member")
-            groups = await self.api("GET", "/api/v3/groups") or []
-            groups = [g for g in groups if not g.get("archived")]
+            me = await self.sc.whoami()
+            if "write" not in me["scopes"]:
+                self.notify(
+                    "this token has no write scope, so some edits will fail. "
+                    "generate a read + write token (it begins with sct_rw_) "
+                    "to change stories.",
+                    severity="warning", timeout=10,
+                )
+            teams = await self.sc.teams()
             data = {
-                "viewer": {
-                    "id": me.get("id", ""),
-                    "displayName": me.get("name")
-                    or me.get("mention_name", "me"),
-                },
-                "organization": {"name": me.get("workspace2", {}).get("url_slug", "shortcut")},
-                "teams": {
-                    "nodes": [
-                        {
-                            "id": g["id"],
-                            "name": g.get("name") or "team",
-                            "key": (g.get("mention_name") or g.get("name") or "team")[:8],
-                            "color": label_color(g.get("name") or "team"),
-                        }
-                        for g in groups
-                    ]
-                },
+                "viewer": {"id": me["id"], "displayName": me["displayName"]},
+                "organization": {"name": me["slug"]},
+                "teams": {"nodes": list(teams)},
             }
         except Exception as e:
             if pick_team:
@@ -1723,7 +2074,7 @@ class SCTUI(App):
         )
         if team is None:
             issues_list.loading = False
-            self.notify("no teams found (sctui lists Shortcut Teams/groups)", severity="warning")
+            self.notify("no teams found (sctui lists Shortcut Teams)", severity="warning")
             return
         self.query_one("#teams", NavList).highlighted = self._teams.index(team)
         self.load_team(team)
@@ -1779,7 +2130,7 @@ class SCTUI(App):
             issues_list.loading = True
         self._save_state()
         try:
-            fetched = await self.fetch_issues(team["id"])
+            fetched = await self.sc.board(team["id"])
         except Exception as e:
             issues_list.loading = False
             self._refreshing = False
@@ -1816,7 +2167,7 @@ class SCTUI(App):
         # "issues" worker group makes this a quiet swap that preserves the
         # highlight and the open detail panel. Skip whenever it could
         # interrupt the user (modal open) or race a pending mutation.
-        if self.client is None or self._team is None:
+        if self.sc is None or self._team is None:
             return
         if isinstance(self.screen, ModalScreen):
             return
@@ -1840,53 +2191,16 @@ class SCTUI(App):
         await box.remove_children()
         head.update(Text(" comments · loading…", style=C_DIM))
         try:
-            story = await self.api("GET", f"/api/v3/stories/{issue['id']}") or {}
-            member_map = getattr(self, "_member_map", {})
-            tasks = [
-                {
-                    "identifier": "\uf00c" if t.get("complete") else "\u25cb",
-                    "title": t.get("description") or "",
-                    "state": {
-                        "id": "t", "name": "task",
-                        "color": C_GREEN if t.get("complete") else C_SUB,
-                        "type": "completed" if t.get("complete") else "unstarted",
-                        "position": 1,
-                    },
-                }
-                for t in story.get("tasks") or []
-            ]
-            data = {
-                "issue": {
-                    "comments": {
-                        "nodes": [
-                            {
-                                "id": str(c.get("id", "")),
-                                "body": c.get("text") or "",
-                                "createdAt": c.get("created_at", ""),
-                                "user": {
-                                    "displayName": member_map.get(
-                                        c.get("author_id", ""), {}
-                                    ).get("displayName", "unknown")
-                                },
-                                "botActor": None,
-                            }
-                            for c in story.get("comments") or []
-                        ]
-                    },
-                    "parent": None,
-                    "children": {"nodes": tasks},
-                }
-            }
-            if story.get("description") and not issue.get("description"):
-                issue["description"] = story["description"]
-                self.query_one("#d-desc", Markdown).update(story["description"])
+            detail = await self.sc.detail(issue)
         except Exception as e:
             head.update(Text(f" comments · failed: {e}", style=C_RED))
             return
         if self._detail_issue is None or self._detail_issue["id"] != issue["id"]:
             return
+        self._merge(issue, detail["issue"])
+        self._update_detail_meta(issue)
         # parent + sub-issues context (old caches / demo stubs lack the keys)
-        parent = data["issue"].get("parent")
+        parent = issue.get("parent")
         if parent:
             line = Text(no_wrap=True, overflow="ellipsis")
             line.append("\uf148 parent ", style=C_DIM)
@@ -1898,7 +2212,7 @@ class SCTUI(App):
                 line.append(f" — {p_title}", style=C_DIM)
             parent_w.update(line)
             parent_w.add_class("visible")
-        children = (data["issue"].get("children") or {}).get("nodes") or []
+        children = detail["children"]
         if children:
             done = sum(
                 1 for ch in children
@@ -1918,9 +2232,7 @@ class SCTUI(App):
                 row.append(f" {c_title}", style=C_TEXT)
                 await cbox.mount(Static(row))
             cbox.add_class("visible")
-        comments = sorted(
-            data["issue"]["comments"]["nodes"], key=lambda c: c["createdAt"]
-        )
+        comments = sorted(detail["comments"], key=lambda c: c["createdAt"])
         head_text = Text(" ", style=C_MAUVE)
         head_text.append(f" comments · {len(comments)}", style=f"bold {C_SUB}")
         head.update(head_text)
@@ -1942,21 +2254,17 @@ class SCTUI(App):
 
     @work(exclusive=True, group="members")
     async def pick_transition(self, issue: dict) -> None:
-        try:
-            workflows = await self.api("GET", "/api/v3/workflows") or []
-        except Exception as e:
-            self.notify(f"shortcut: {e}", severity="error")
-            return
         states = []
-        for wf in workflows:
-            if wf.get("id") == issue.get("workflow_id") or not issue.get("workflow_id"):
-                states = wf.get("states", [])
-                if wf.get("id") == issue.get("workflow_id"):
-                    break
+        if issue.get("workflow_id") is not None:
+            try:
+                states = await self.sc.workflow_states(issue["workflow_id"])
+            except Exception as e:
+                self.notify(f"shortcut: {e}", severity="error")
+                return
         if not states:
             self.notify("no workflow states found", severity="warning")
             return
-        self._wf_states = {str(s["id"]): normalize_state(s) for s in states}
+        self._wf_states = {s["id"]: s for s in states}
         opts = []
         for s in sorted(self._wf_states.values(), key=state_sort_key):
             row = Text()
@@ -1975,11 +2283,7 @@ class SCTUI(App):
     @work(group="mutate")
     async def apply_status(self, issue: dict, state_id: str) -> None:
         try:
-            await self.api(
-                "PUT",
-                f"/api/v3/stories/{issue['id']}",
-                json={"workflow_state_id": int(state_id)},
-            )
+            await self.sc.move_story(issue["id"], state_id)
             new_state = self._wf_states.get(state_id) or issue["state"]
         except Exception as e:
             self.notify(f"update failed: {e}", severity="error")
@@ -1994,11 +2298,7 @@ class SCTUI(App):
     @work(group="mutate")
     async def apply_priority(self, issue: dict, p: int) -> None:
         try:
-            await self.api(
-                "PUT",
-                f"/api/v3/stories/{issue['id']}",
-                json={"story_type": PRIORITY_TYPE.get(p, "feature")},
-            )
+            await self.sc.set_story_type(issue["id"], PRIORITY_TYPE.get(p, "feature"))
         except Exception as e:
             self.notify(f"update failed: {e}", severity="error")
             return
@@ -2012,11 +2312,7 @@ class SCTUI(App):
     @work(group="mutate")
     async def apply_assignee(self, issue: dict, assignee_id: str | None) -> None:
         try:
-            await self.api(
-                "PUT",
-                f"/api/v3/stories/{issue['id']}",
-                json={"owner_ids": [assignee_id] if assignee_id else []},
-            )
+            await self.sc.assign_story(issue["id"], assignee_id)
             new_assignee = None
             if assignee_id:
                 for m in self._members.get((self._team or {}).get("id"), []):
@@ -2038,22 +2334,8 @@ class SCTUI(App):
 
     @work(group="mutate")
     async def create_issue(self, team: dict, title: str, desc: str | None) -> None:
-        payload = {
-            "name": title,
-            "group_id": team["id"],
-            "story_type": "feature",
-        }
-        if desc:
-            payload["description"] = desc
         try:
-            created = await self.api("POST", "/api/v3/stories", json=payload)
-            issue = normalize_story(
-                created,
-                getattr(self, "_state_map", {}),
-                getattr(self, "_epic_map", {}),
-                getattr(self, "_member_map", {}),
-                self._viewer_id,
-            )
+            issue = await self.sc.create_story(team, title, desc)
         except Exception as e:
             self.notify(f"create failed: {e}", severity="error")
             return
@@ -2069,11 +2351,7 @@ class SCTUI(App):
     @work(group="mutate")
     async def submit_comment(self, issue: dict, body: str) -> None:
         try:
-            await self.api(
-                "POST",
-                f"/api/v3/stories/{issue['id']}/comments",
-                json={"text": body},
-            )
+            await self.sc.add_comment(issue["id"], body)
         except Exception as e:
             self.notify(f"comment failed: {e}", severity="error")
             return
@@ -2581,73 +2859,48 @@ class SCTUI(App):
 
     @work(exclusive=True, group="members")
     async def open_labels(self, issue: dict) -> None:
-        labels = self._workspace_labels
-        if labels is None:
-            try:
-                raw = await self.api("GET", "/api/v3/labels") or []
-            except Exception as e:
-                self.notify(f"shortcut: {e}", severity="error")
-                return
-            labels = [
-                {
-                    "id": str(l.get("id", "")),
-                    "name": l.get("name", "?"),
-                    "color": l.get("color") or label_color(l.get("name", "?")),
-                }
-                for l in raw
-                if not l.get("archived")
-            ]
-            self._workspace_labels = labels
-        # stories carry label names (ids may be absent in normalized dicts) —
-        # match by NAME: option ids are the names, selection is a name set
-        options = [
-            {"id": lb["name"], "name": lb["name"], "color": lb["color"]}
-            for lb in labels
-        ]
+        try:
+            # the board row may hold only the first page of the story's labels
+            self._merge(issue, await self.sc.complete(issue))
+            labels = await self.sc.labels()
+        except Exception as e:
+            self.notify(f"shortcut: {e}", severity="error")
+            return
+        options = list(labels)
         known = {o["id"] for o in options}
         for lb in issue["labels"]["nodes"]:
-            if lb["name"] not in known:
-                options.append({
-                    "id": lb["name"],
-                    "name": lb["name"],
-                    "color": lb.get("color") or label_color(lb["name"]),
-                })
+            if lb["id"] not in known:
+                options.append(lb)
         if not options:
             self.notify("this workspace has no labels yet", severity="warning")
             return
-        current = {lb["name"] for lb in issue["labels"]["nodes"]}
+        current = {lb["id"] for lb in issue["labels"]["nodes"]}
 
-        def done(names: list | None) -> None:
-            if names is not None and set(names) != current:
-                self.apply_labels(issue, names)
+        def done(ids: list | None) -> None:
+            if ids is not None and set(ids) != current:
+                chosen = [o for o in options if o["id"] in ids]
+                self.apply_labels(issue, sorted(chosen, key=lambda o: o["name"]))
 
         self.push_screen(
-            LabelsModal(f"\uf02b labels · {issue['identifier']}", options, current),
+            LabelsModal(f" labels · {issue['identifier']}", options, current),
             done,
         )
 
     @work(group="mutate")
-    async def apply_labels(self, issue: dict, names: list) -> None:
+    async def apply_labels(self, issue: dict, labels: list[dict]) -> None:
+        before = {lb["id"] for lb in issue["labels"]["nodes"]}
+        after = {lb["id"] for lb in labels}
         try:
-            await self.api(
-                "PUT",
-                f"/api/v3/stories/{issue['id']}",
-                json={"labels": [{"name": n} for n in names]},
-            )
+            await self.sc.relabel_story(issue["id"], add=after - before, remove=before - after)
         except Exception as e:
             self.notify(f"update failed: {e}", severity="error")
             return
-        color_of = {
-            lb["name"]: lb["color"] for lb in self._workspace_labels or []
-        }
-        issue["labels"] = {"nodes": [
-            {"name": n, "color": color_of.get(n) or label_color(n)} for n in names
-        ]}
+        issue["labels"] = {"nodes": labels}
         self._write_team_cache()
         self.render_issues(keep=issue["id"])
         if self._detail_issue and self._detail_issue["id"] == issue["id"]:
             self._update_detail_meta(issue)
-        self.notify(f"\uf02b {issue['identifier']} · labels updated")
+        self.notify(f" {issue['identifier']} · labels updated")
 
     def action_move_project(self) -> None:
         issue = self._current_issue()
@@ -2660,19 +2913,10 @@ class SCTUI(App):
         epics = self._workspace_epics
         if epics is None:
             try:
-                raw = await self.api("GET", "/api/v3/epics") or []
+                epics = list(await self.sc.epics())
             except Exception as e:
                 self.notify(f"shortcut: {e}", severity="error")
                 return
-            epics = [
-                {
-                    "id": str(ep["id"]),
-                    "name": ep.get("name") or f"epic {ep['id']}",
-                    "color": label_color(ep.get("name") or f"epic {ep['id']}"),
-                }
-                for ep in raw
-                if not ep.get("archived")
-            ]
             self._workspace_epics = epics
         current = (issue.get("project") or {}).get("id")
         opts = []
@@ -2717,12 +2961,7 @@ class SCTUI(App):
     @work(group="mutate")
     async def create_project_and_assign(self, issue: dict, name: str) -> None:
         try:
-            created = await self.api("POST", "/api/v3/epics", json={"name": name})
-            epic = {
-                "id": str(created["id"]),
-                "name": created.get("name") or name,
-                "color": label_color(created.get("name") or name),
-            }
+            epic = await self.sc.create_epic(name)
         except Exception as e:
             self.notify(f"create epic failed: {e}", severity="error")
             return
@@ -2734,11 +2973,7 @@ class SCTUI(App):
     @work(group="mutate")
     async def apply_project(self, issue: dict, epic_id: str | None) -> None:
         try:
-            await self.api(
-                "PUT",
-                f"/api/v3/stories/{issue['id']}",
-                json={"epic_id": int(epic_id) if epic_id is not None else None},
-            )
+            await self.sc.set_story_epic(issue["id"], epic_id)
         except Exception as e:
             self.notify(f"update failed: {e}", severity="error")
             return
@@ -2790,16 +3025,7 @@ class SCTUI(App):
         members = self._members.get(team["id"])
         if members is None:
             try:
-                users = await self.api("GET", "/api/v3/members") or []
-                members = [
-                    {
-                        "id": u.get("id", ""),
-                        "displayName": (u.get("profile") or {}).get("name")
-                        or (u.get("profile") or {}).get("mention_name", "?"),
-                    }
-                    for u in users
-                    if not u.get("disabled")
-                ]
+                members = list(await self.sc.members())
             except Exception as e:
                 self.notify(f"shortcut: {e}", severity="error")
                 return
@@ -2895,7 +3121,9 @@ config: ~/.config/sctui/config.json remaps any keybind and sets options
         (auto_refresh_seconds, animations). sctui --init-config writes a
         starter file. changes apply on restart.
 
-auth: SHORTCUT_API_TOKEN env var, or ~/.config/sctui/config.toml.
+auth: a Shortcut v4 read + write API token (it begins with sct_rw_; a v3
+      token does not work) in the SHORTCUT_API_TOKEN env var, or
+      ~/.config/sctui/config.toml.
       nothing set? sctui asks on first launch.
 
 keys: enter open ticket   n new   s status   p type   c comment
