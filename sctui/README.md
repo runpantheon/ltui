@@ -10,7 +10,7 @@ Your whole workspace, grouped the way triage actually works —
 [![python](https://img.shields.io/badge/python-3.11+-89b4fa?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![built with textual](https://img.shields.io/badge/built%20with-textual-b4befe?style=flat-square)](https://github.com/Textualize/textual)
 [![license](https://img.shields.io/badge/license-GPLv3%20%2B%20commercial-a6e3a1?style=flat-square)](LICENSE)
-[![shortcut api](https://img.shields.io/badge/shortcut-rest%20api%20v3-58b1e4?style=flat-square)](https://developer.shortcut.com/api/rest/v3)
+[![shortcut api](https://img.shields.io/badge/shortcut-rest%20api%20v4-58b1e4?style=flat-square)](https://developer.shortcut.com/api/rest/v4)
 
 <img src="assets/hero.png" alt="sctui — issue list with detail panel" width="100%">
 
@@ -113,6 +113,13 @@ upgrading later: `uv tool upgrade sctui` / `pipx reinstall sctui`.
 (click the link in the app — it opens Shortcut → Settings → API Tokens).
 validated live, stored in `~/.config/sctui/config.toml` (permissions `600`).
 or set `SHORTCUT_API_TOKEN` and it never asks.
+
+sctui uses Shortcut's REST API v4, which needs a v4 token. generate one with
+both the read and write scopes (it begins with `sct_rw_`, or `sct_rwa_` when a
+workspace admin creates it). a read-only token (`sct_r_`) can browse, but
+every edit fails. a v3 token does not work with v4.
+if you set sctui up with an older token, generate a new one and paste it when
+sctui asks.
 
 <div align="center">
 <img src="assets/onboard.png" alt="first-run onboarding" width="70%">
@@ -350,7 +357,7 @@ sctui is the Shortcut sibling of [**ltui**](https://github.com/runpantheon/ltui/
 the shared design system lives in [**ricekit**](https://github.com/Gheat1/ricekit).
 
 standing on the shoulders of [textual](https://github.com/Textualize/textual)
-and the [Shortcut REST API](https://developer.shortcut.com/api/rest/v3).
+and the [Shortcut REST API](https://developer.shortcut.com/api/rest/v4).
 
 ## license
 
