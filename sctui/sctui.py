@@ -472,7 +472,7 @@ class Shortcut:
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         self._memo: dict[str, asyncio.Future] = {}
-        self._on_unauthorized = on_unauthorized
+        self.on_unauthorized = on_unauthorized
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -621,8 +621,8 @@ class Shortcut:
                 body = resp.text
             detail = error_detail(resp.status_code, body)
             if resp.status_code == 401:
-                if self._on_unauthorized is not None:
-                    hook, self._on_unauthorized = self._on_unauthorized, None
+                if self.on_unauthorized is not None:
+                    hook, self.on_unauthorized = self.on_unauthorized, None
                     hook()
                 raise AuthError(401, detail)
             raise ApiError(resp.status_code, detail)
@@ -1244,13 +1244,12 @@ class NewTicketModal(ModalScreen):
 
 # ── app ───────────────────────────────────────────────────────────────────
 class OnboardModal(ModalScreen):
-    """First-run setup: paste a Shortcut API token, validate live, save."""
+    BINDINGS = [Binding("escape", "cancel", show=False)]
 
-    BINDINGS = [Binding("escape", "quit_app", show=False)]
-
-    def __init__(self, notice: str | None = None) -> None:
+    def __init__(self, notice: str | None = None, *, first_launch: bool = True) -> None:
         super().__init__()
         self._notice = notice
+        self._first_launch = first_launch
 
     def compose(self) -> ComposeResult:
         with Vertical(id="onboard-box"):
@@ -1285,8 +1284,11 @@ class OnboardModal(ModalScreen):
     def action_open_keys(self) -> None:
         webbrowser.open("https://app.shortcut.com/settings/account/api-tokens")
 
-    def action_quit_app(self) -> None:
-        self.app.exit()
+    def action_cancel(self) -> None:
+        if self._first_launch:
+            self.app.exit()
+        else:
+            self.dismiss(None)
 
     @on(Input.Submitted, "#onboard-key")
     def _submitted(self) -> None:
@@ -2002,11 +2004,18 @@ class SCTUI(App):
 
         def connected(new_token: str | None) -> None:
             if not new_token:
+                self.sc.on_unauthorized = self._reauth
                 return
             try:
                 save_token(new_token)
             except Exception as e:
                 self.notify(f"couldn't save token: {e}", severity="error")
+            if self._token_source == "env":
+                self.notify(
+                    "SHORTCUT_API_TOKEN still holds the rejected token and wins over the "
+                    "saved one at the next launch. unset or update it.",
+                    severity="warning", timeout=10,
+                )
             self._token_source = "file"
             clear_cache()
             self._end_session()
@@ -2017,10 +2026,15 @@ class SCTUI(App):
 
         self.push_screen(
             OnboardModal(
-                f"Shortcut rejected the token from {TOKEN_SOURCE[self._token_source]}."
+                f"Shortcut rejected the token from {TOKEN_SOURCE[self._token_source]}.",
+                first_launch=False,
             ),
             connected,
         )
+
+    def _report(self, e: Exception) -> None:
+        if not isinstance(e, AuthError):
+            self.notify(f"shortcut: {e}", severity="error", timeout=10)
 
     def _end_session(self) -> None:
         for group in ("issues", "detail", "members"):
@@ -2130,7 +2144,7 @@ class SCTUI(App):
         except Exception as e:
             if pick_team:
                 issues_list.loading = False
-            self.notify(f"shortcut: {e}", severity="error", timeout=10)
+            self._report(e)
             return
         self._render_boot(data)
         write_cache("boot", data)
@@ -2202,7 +2216,7 @@ class SCTUI(App):
         except Exception as e:
             issues_list.loading = False
             self._refreshing = False
-            self.notify(f"shortcut: {e}", severity="error", timeout=10)
+            self._report(e)
             return
         if self._team is None or self._team["id"] != team["id"]:
             self._refreshing = False
@@ -2229,7 +2243,7 @@ class SCTUI(App):
                 try:
                     refill_row(fresh, await self.sc.complete(fresh))
                 except Exception as e:
-                    self.notify(f"shortcut: {e}", severity="error", timeout=10)
+                    self._report(e)
                 if self._detail_issue is fresh:
                     self._update_detail_meta(fresh)
 
