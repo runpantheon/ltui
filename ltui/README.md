@@ -303,6 +303,10 @@ plus:
 - `message`: the toast shown when the script starts, with the same `{{...}}`
   placeholders as `args`, e.g. `"Researching {{issue.identifier}}."`. Defaults
   to "*name* launched for *ticket*".
+- `done_message`: a toast shown when the script exits successfully. Takes the
+  same placeholders plus `{{stdout}}`, the last few lines the script printed
+  (colour codes stripped), e.g. `"{{stdout}}"`. Without it, nothing is shown
+  on success.
 
 ```jsonc
 {
@@ -312,6 +316,7 @@ plus:
       "name": "Claude on ticket",
       "description": "open a worktree and start Claude on the ticket",
       "message": "Starting Claude on {{issue.identifier}}.",
+      "done_message": "{{stdout}}",
       "path": "~/bin/claude-on-ticket",
       "args": ["{{issue.branchName}}"]
     },
@@ -327,8 +332,8 @@ plus:
 If a script exits with a non-zero code, ltui shows a red toast with the last
 few lines it printed to **stderr** (colour codes stripped), or the exit code
 if it printed nothing. So have your script print its errors to stderr
-(`echo "worktree already exists" >&2; exit 1`); stdout is ignored. This
-applies to `x`'s script too.
+(`echo "worktree already exists" >&2; exit 1`), and its result to stdout for
+`done_message`. The error toast applies to `x`'s script too.
 
 To run a shell function rather than a file, make the shell the `path` and pass
 the ticket as an argument rather than splicing it into the command. If your

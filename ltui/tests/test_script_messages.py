@@ -16,16 +16,16 @@ class ScriptErrorTextTest(unittest.TestCase):
                b"\x1b[31mticket: session SuperIT-sup-1 already exists.\x1b[39m\n"
                b"line four\nline five\n")
         self.assertEqual(
-            ltui.script_error_text(raw),
+            ltui.script_output_text(raw),
             "ticket: session SuperIT-sup-1 already exists.\nline four\nline five",
         )
 
     def test_empty_and_blank_stderr(self) -> None:
-        self.assertEqual(ltui.script_error_text(b""), "")
-        self.assertEqual(ltui.script_error_text(b"\n  \n"), "")
+        self.assertEqual(ltui.script_output_text(b""), "")
+        self.assertEqual(ltui.script_output_text(b"\n  \n"), "")
 
     def test_undecodable_bytes_do_not_raise(self) -> None:
-        self.assertIn("bad", ltui.script_error_text(b"bad \xff byte"))
+        self.assertIn("bad", ltui.script_output_text(b"bad \xff byte"))
 
 
 class LoadScriptsMessageTest(unittest.TestCase):
@@ -37,6 +37,15 @@ class LoadScriptsMessageTest(unittest.TestCase):
         self.assertEqual(warnings, [])
         self.assertEqual(scripts[0]["message"], "Researching {{issue.identifier}}.")
         self.assertEqual(scripts[1]["message"], "")
+
+    def test_done_message_is_normalised(self) -> None:
+        scripts, warnings = ltui.load_scripts({"scripts": [
+            {"path": "/bin/a", "done_message": " {{stdout}} "},
+            {"path": "/bin/b", "done_message": 3},
+        ]})
+        self.assertEqual(scripts[0]["done_message"], "{{stdout}}")
+        self.assertEqual(scripts[1]["done_message"], "")
+        self.assertEqual(len(warnings), 1)
 
     def test_non_string_message_warns_and_is_ignored(self) -> None:
         scripts, warnings = ltui.load_scripts({"scripts": [
@@ -128,6 +137,45 @@ class ScriptToastTest(unittest.IsolatedAsyncioTestCase):
             ident = await self.run_script(pilot)
             self.assertEqual(self.toasts()[0][2], f"[red]{ident}")
             self.assertIn(("error", "Start ticket failed", "[bold]oops[/]"), self.toasts())
+
+
+    async def test_done_message_shows_stdout_on_success(self) -> None:
+        self.use_script(
+            "echo 'Naming the worktree...'; echo 'Creating sup-1-x - 3/20 spots used.';"
+            " printf '\\033[32mTicket started in tmux session SuperIT-sup-1.\\033[0m\\n'",
+            message="Researching {{issue.identifier}}.",
+            done_message="{{issue.identifier}}: {{stdout}}",
+        )
+        async with self.app.run_test(size=(148, 41)) as pilot:
+            ident = await self.run_script(pilot, settle=1.5)
+            for _ in range(15):
+                if len(self.toasts()) > 1:
+                    break
+                await pilot.pause(0.1)
+            self.assertEqual(self.toasts(), [
+                ("information", "", f"Researching {ident}."),
+                ("information", "",
+                 f"{ident}: Naming the worktree...\nCreating sup-1-x - 3/20 spots used.\n"
+                 "Ticket started in tmux session SuperIT-sup-1."),
+            ])
+
+    async def test_done_message_is_not_shown_on_failure(self) -> None:
+        self.use_script("echo partial; echo broke >&2; exit 1", done_message="{{stdout}}")
+        async with self.app.run_test(size=(148, 41)) as pilot:
+            await self.run_script(pilot)
+            severities = [sev for sev, _, _ in self.toasts()]
+            self.assertEqual(severities, ["information", "error"])
+            self.assertEqual(self.toasts()[1][2], "broke")
+
+    async def test_empty_done_message_falls_back(self) -> None:
+        self.use_script("exit 0", done_message="{{stdout}}")
+        async with self.app.run_test(size=(148, 41)) as pilot:
+            await self.run_script(pilot, settle=1.0)
+            for _ in range(15):
+                if len(self.toasts()) > 1:
+                    break
+                await pilot.pause(0.1)
+            self.assertIn(("information", "", "Start ticket finished"), self.toasts())
 
 
 if __name__ == "__main__":
