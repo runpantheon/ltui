@@ -163,6 +163,8 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `m`      | toggle **mine only**                          |
 | `v`      | cycle grouping: **status → project → initiative** |
 | `S`      | sort within groups: **recent ↔ priority**     |
+| `h`      | toggle **hidden statuses** on / off           |
+| `H`      | choose **statuses to hide** (e.g. Duplicate)  |
 | `V`      | filter to a **single project**                |
 | `t`      | cycle **theme**                               |
 | `,`      | open **settings**                             |
