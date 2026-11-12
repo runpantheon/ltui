@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tomllib
 import webbrowser
+from functools import partial
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,11 +28,12 @@ import httpx
 from rich.markup import escape
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.color import Color as TColor
 from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.keys import format_key
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Footer, Input, Markdown, OptionList, Static, TextArea
@@ -475,22 +477,100 @@ DEFAULT_KEYBINDS = {
 }
 
 
-def build_bindings(user_keybinds: dict | None = None) -> list:
-    """App bindings from defaults + config.json overrides. Fail-safe: a bad
-    config falls back to the defaults for the affected action."""
-    merged: dict[str, tuple[list, str | None]] = {}
-    user_keybinds = user_keybinds if user_keybinds is not None else (
-        USER_CONFIG.get("keybinds", {}) if isinstance(USER_CONFIG, dict) else {}
-    )
-    for action, (keys, label) in DEFAULT_KEYBINDS.items():
-        custom = user_keybinds.get(action)
-        if isinstance(custom, str):
-            keys = [custom]
-        elif isinstance(custom, list) and all(isinstance(k, str) for k in custom) and custom:
-            keys = custom
-        merged[action] = (keys, label)
+def _key_list(value) -> list[str]:
+    """A config key value — "x" or ["x", "ctrl+x"] — as a list; [] if invalid."""
+    if isinstance(value, str) and value:
+        return [value]
+    if isinstance(value, list) and value and all(isinstance(k, str) and k for k in value):
+        return list(value)
+    return []
+
+
+def merged_keybinds(user_keybinds: dict | None = None) -> dict[str, list[str]]:
+    """action -> keys, defaults overlaid with config.json "keybinds". Fail-safe:
+    a bad entry falls back to the default keys for that action."""
+    if user_keybinds is None:
+        user_keybinds = USER_CONFIG.get("keybinds", {}) if isinstance(USER_CONFIG, dict) else {}
+    if not isinstance(user_keybinds, dict):
+        user_keybinds = {}
+    return {
+        action: _key_list(user_keybinds.get(action)) or keys
+        for action, (keys, _label) in DEFAULT_KEYBINDS.items()
+    }
+
+
+def load_scripts(config: dict | None = None) -> tuple[list[dict], list[str]]:
+    """config.json "scripts" — extra custom scripts beyond `x`'s
+    coding-tools.json one. Each entry is a coding-tools-style {path, args,
+    env} plus optional "key" (a key or list), "name" (palette title) and
+    "description" (palette subtitle + help overlay). Returns the usable
+    entries, normalised, and a warning per entry that had to be skipped."""
+    if config is None:
+        config = USER_CONFIG
+    raw = config.get("scripts", []) if isinstance(config, dict) else []
+    if not isinstance(raw, list):
+        return [], ['config.json: "scripts" must be a list — ignoring it']
+    scripts: list[dict] = []
+    warnings: list[str] = []
+    for i, entry in enumerate(raw):
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path.strip():
+            warnings.append(f'config.json: scripts[{i}] has no "path" — skipped')
+            continue
+        keys = _key_list(entry.get("key"))
+        if "key" in entry and not keys:
+            warnings.append(f'config.json: scripts[{i}] has an invalid "key" — palette only')
+        name = entry.get("name")
+        desc = entry.get("description")
+        scripts.append({
+            **entry,
+            "keys": keys,
+            "name": name.strip() if isinstance(name, str) and name.strip()
+            else Path(path).name,
+            "description": desc.strip() if isinstance(desc, str) else "",
+        })
+    return scripts, warnings
+
+
+# Keys a script can't take even though they aren't app actions: the lists'
+# and detail panel's own motions, focus movement, and Textual's built-ins.
+RESERVED_KEYS = {
+    "escape", "enter", "up", "down", "tab", "shift+tab",
+    "j", "k", "g", "G", "ctrl+d", "ctrl+u", "ctrl+f", "ctrl+b",
+    "ctrl+p", "ctrl+q", "ctrl+c",
+}
+
+
+def bind_scripts(
+    scripts: list[dict], keymap: dict[str, list[str]]
+) -> tuple[list[tuple[str, int]], list[str]]:
+    """(key, script index) pairs to bind, plus a warning for each script key
+    dropped because ltui or an earlier script already has it — built-ins
+    always win, so a script can't silently steal `s` or `q`."""
+    taken = RESERVED_KEYS | {k for keys in keymap.values() for k in keys}
+    pairs: list[tuple[str, int]] = []
+    warnings: list[str] = []
+    for index, script in enumerate(scripts):
+        for key in script["keys"]:
+            if key in taken:
+                warnings.append(
+                    f"script “{script['name']}”: key {key} is already bound — skipped"
+                )
+                continue
+            taken.add(key)
+            pairs.append((key, index))
+    return pairs, warnings
+
+
+def build_bindings(
+    user_keybinds: dict | None = None, scripts: list[dict] | None = None
+) -> list:
+    """App bindings from defaults + config.json overrides, then one binding
+    per custom-script key."""
+    keymap = merged_keybinds(user_keybinds)
     bindings = [Binding("escape", "back", show=False)]
-    for action, (keys, label) in merged.items():
+    for action, keys in keymap.items():
+        label = DEFAULT_KEYBINDS[action][1]
         for i, key in enumerate(keys):
             bindings.append(
                 Binding(
@@ -500,7 +580,98 @@ def build_bindings(user_keybinds: dict | None = None) -> list:
                     show=bool(label) and i == 0,
                 )
             )
+    scripts = SCRIPTS if scripts is None else scripts
+    for key, index in bind_scripts(scripts, keymap)[0]:
+        bindings.append(
+            Binding(key, f"run_custom_script({index})", scripts[index]["name"], show=False)
+        )
     return bindings
+
+
+def key_label(key: str) -> str:
+    """A Textual key name as the help overlay shows it: slash → /, left → ←,
+    ctrl+d stays ctrl+d."""
+    *mods, base = key.split("+")
+    return "+".join([*mods, format_key(base)])
+
+
+def keys_label(keymap: dict[str, list[str]], *actions: str) -> str:
+    """Keys for one or more actions: x/X for an action with two keys, [ / ]
+    for a pair of actions."""
+    return " / ".join("/".join(key_label(k) for k in keymap.get(a, [])) for a in actions)
+
+
+# The help overlay. A row's key is either literal text (bindings that live on
+# widgets, not the app) or a tuple of app actions, which is rendered from the
+# live keymap so remapped keys show up as remapped.
+HELP_SECTIONS = [
+    ("navigate", [
+        ("ctrl+d / ctrl+u", "half page down / up"),
+        (("prev_group", "next_group"), "previous / next group"),
+        (("command_palette",), "command palette"),
+        ("j/k ↑↓", "move around lists and the detail panel"),
+        (("focus_left", "focus_right"), "switch panes — rightward on a ticket opens it"),
+        ("g / G", "jump to top / bottom"),
+        ("enter", "open ticket detail (click works too)"),
+        ("esc", "close panel · dismiss modal · clear filter"),
+    ]),
+    ("ticket", [
+        (("new_ticket",), "new ticket in the current team"),
+        (("change_status",), "change status"),
+        (("change_priority",), "change priority"),
+        (("change_due_date",), "set or clear due date"),
+        (("edit_labels",), "edit labels"),
+        (("move_project",), "move to a project (or create one)"),
+        (("change_assignee",), "change assignee (or unassign)"),
+        (("add_comment",), "add a comment (ctrl+s to send)"),
+        (("yank",), "yank — copy branch / url / identifier"),
+        (("open_browser",), "open in browser"),
+        (("run_script",), "run custom script (~/.linear/coding-tools.json)"),
+    ]),
+    ("view", [
+        (("filter",), "filter issues"),
+        (("toggle_mine",), "toggle mine only"),
+        (("toggle_group",), "group by status / project / initiative"),
+        (("toggle_sort",), "sort by recent / priority"),
+        (("pick_project",), "filter to a single project"),
+        (("cycle_theme",), "cycle theme"),
+        (("open_settings",), "settings"),
+        (("refresh",), "refresh"),
+    ]),
+    ("app", [
+        (("help",), "this help"),
+        ("ctrl+n / ctrl+p", "next / previous inside the command palette"),
+        (("quit",), "quit"),
+    ]),
+]
+
+
+def help_sections(
+    keymap: dict[str, list[str]], scripts: list[dict]
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """HELP_SECTIONS resolved against the live keymap, plus a "scripts"
+    section for config.json scripts — each under the keys it actually got,
+    or "palette" when it has none."""
+    sections = [
+        (title, [
+            (spec if isinstance(spec, str) else keys_label(keymap, *spec), desc)
+            for spec, desc in rows
+        ])
+        for title, rows in HELP_SECTIONS
+    ]
+    if scripts:
+        bound: dict[int, list[str]] = {}
+        for key, index in bind_scripts(scripts, keymap)[0]:
+            bound.setdefault(index, []).append(key_label(key))
+        sections.append(("scripts", [
+            ("/".join(bound.get(i, [])) or "palette", s["description"] or s["name"])
+            for i, s in enumerate(scripts)
+        ]))
+    return sections
+
+
+SCRIPTS, SCRIPT_WARNINGS = load_scripts()
+SCRIPT_WARNINGS += bind_scripts(SCRIPTS, merged_keybinds())[1]
 
 
 CONFIG_TEMPLATE = """{
@@ -535,7 +706,8 @@ CONFIG_TEMPLATE = """{
   "options": {
     "auto_refresh_seconds": 180,
     "animations": true
-  }
+  },
+  "scripts": []
 }
 """
 
@@ -1430,51 +1602,11 @@ class HelpModal(ModalScreen):
         Binding("q", "close_modal", show=False),
     ]
 
-    SECTIONS = [
-        ("navigate", [
-            ("ctrl+d / ctrl+u", "half page down / up"),
-            ("[ / ]", "previous / next group"),
-            (":", "command palette"),
-            ("j/k ↑↓", "move around lists and the detail panel"),
-            ("← / →", "switch panes — → on a ticket opens it"),
-            ("g / G", "jump to top / bottom"),
-            ("enter", "open ticket detail (click works too)"),
-            ("esc", "close panel · dismiss modal · clear filter"),
-        ]),
-        ("ticket", [
-            ("n", "new ticket in the current team"),
-            ("s", "change status"),
-            ("p", "change priority"),
-            ("d", "set or clear due date"),
-            ("l", "edit labels"),
-            ("P", "move to a project (or create one)"),
-            ("a", "change assignee (or unassign)"),
-            ("c", "add a comment (ctrl+s to send)"),
-            ("y", "yank — copy branch / url / identifier"),
-            ("o", "open in browser"),
-            ("x", "run custom script (~/.linear/coding-tools.json)"),
-        ]),
-        ("view", [
-            ("/", "filter issues"),
-            ("m", "toggle mine only"),
-            ("v", "group by status / project / initiative"),
-            ("S", "sort by recent / priority"),
-            ("V", "filter to a single project"),
-            ("t", "cycle theme"),
-            (",", "settings"),
-            ("r", "refresh"),
-        ]),
-        ("app", [
-            ("?", "this help"),
-            ("ctrl+p", "command palette (ctrl+n / ctrl+p move in it)"),
-            ("q", "quit"),
-        ]),
-    ]
-
     def compose(self) -> ComposeResult:
         with Vertical(id="help-box"):
             yield Static(id="help-title")
-            yield Static(id="help-body")
+            with VerticalScroll(id="help-scroll"):
+                yield Static(id="help-body")
             yield Static(id="help-foot")
 
     def on_mount(self) -> None:
@@ -1483,9 +1615,10 @@ class HelpModal(ModalScreen):
         title.append("\uf11c ", style=C_BLUE)
         title.append("keys", style=f"bold {C_TEXT}")
         self.query_one("#help-title", Static).update(title)
-        key_w = max(len(k) for _, rows in self.SECTIONS for k, _ in rows) + 3
+        sections = help_sections(merged_keybinds(), SCRIPTS)
+        key_w = max(len(k) for _, rows in sections for k, _ in rows) + 3
         body = Text()
-        for section, rows in self.SECTIONS:
+        for section, rows in sections:
             if body:
                 body.append("\n")
             body.append(f" {section}\n", style=f"bold {C_DIM}")
@@ -1746,6 +1879,7 @@ class LTUI(App):
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #help-title {{ padding: 0 1 1 1; }}
+    #help-scroll {{ height: auto; max-height: 70vh; }}
     #help-body {{ height: auto; }}
     #help-foot {{ padding: 1 1 0 1; }}
 
@@ -1882,6 +2016,8 @@ class LTUI(App):
         self._update_profile()
         self.set_interval(FX_TICK, self._tick_fx)
         self.query_one("#issues").focus()
+        for warning in SCRIPT_WARNINGS:
+            self.notify(warning, severity="warning", timeout=10)
         try:
             key = load_api_key()
         except Exception:
@@ -3410,11 +3546,41 @@ class LTUI(App):
         except Exception as e:
             self.notify(f" bad coding-tools.json: {e}", severity="error")
             return
-        path = cfg.get("path")
-        if not path:
+        if not cfg.get("path"):
             self.notify(" coding-tools.json: openIssue.path missing", severity="error")
             return
-        path = Path(str(path)).expanduser()
+        self._launch_script(cfg, issue, "script")
+
+    def action_run_custom_script(self, index: int) -> None:
+        """Run scripts[index] from config.json — bound to its "key" and listed
+        in the command palette under its "name"."""
+        if not 0 <= index < len(SCRIPTS):
+            return
+        issue = self._current_issue()
+        if not issue:
+            self.notify(" no ticket highlighted", severity="warning")
+            return
+        self._launch_script(SCRIPTS[index], issue, SCRIPTS[index]["name"])
+
+    def get_system_commands(self, screen):
+        yield from super().get_system_commands(screen)
+        if LINEAR_CODING_TOOLS.exists():
+            yield SystemCommand(
+                "Run custom script",
+                f"the {LINEAR_CODING_TOOLS.name} script, on the highlighted ticket",
+                self.action_run_script,
+            )
+        for index, script in enumerate(SCRIPTS):
+            yield SystemCommand(
+                script["name"],
+                script["description"] or f"run {script['path']} on the highlighted ticket",
+                partial(self.action_run_custom_script, index),
+            )
+
+    def _launch_script(self, cfg: dict, issue: dict, label: str) -> None:
+        """Launch a coding-tools-style {path, args, env} script, detached,
+        against `issue` with the LINEAR_* env contract."""
+        path = Path(str(cfg["path"])).expanduser()
 
         title = issue.get("title") or ""
         body = issue.get("description") or ""
@@ -3479,9 +3645,9 @@ class LTUI(App):
                 start_new_session=True,  # never fight the TUI for the tty
             )
         except Exception as e:
-            self.notify(f" script failed: {e}", severity="error")
+            self.notify(f" {escape(label)} failed: {e}", severity="error")
             return
-        self.notify(f" script launched for {issue['identifier']}")
+        self.notify(f" {escape(label)} launched for {issue['identifier']}")
 
     def action_yank(self) -> None:
         issue = self._current_issue()
@@ -3528,6 +3694,7 @@ keys: enter open ticket   n new   s status   p priority   d due date
       c comment
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
+        (more scripts, each with its own key: "scripts" in config.json)
       m mine only   v group status/project/initiative
       V one project   S sort recent/priority   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
