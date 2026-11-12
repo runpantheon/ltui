@@ -13,6 +13,7 @@ from __future__ import annotations
 __version__ = "0.3.0"
 
 import asyncio
+import inspect
 import json
 import math
 import sys
@@ -1842,6 +1843,15 @@ class SCTUI(App):
         self._opt_index: dict[str, int] = {}
         self._issue_by_id: dict[str, dict] = {}
 
+    def notify(self, message: str, **kwargs: Any) -> None:
+        # a toast can carry text from Shortcut, which must not be read as markup. textual
+        # 3.0 and older have no `markup` flag, and under the newer parser escape() still
+        # eats text such as "[Bold]"
+        if "markup" in inspect.signature(super().notify).parameters:
+            super().notify(message, markup=False, **kwargs)
+        else:
+            super().notify(escape(message), **kwargs)
+
     def _on_theme_changed(self, _theme) -> None:
         # ansi-background themes (clear, ansi-dark, …) need ansi_color mode
         # so default-color codes pass through and the terminal bg shows
@@ -3111,7 +3121,7 @@ class SCTUI(App):
                 return
             self.copy_to_clipboard(value)
             disp = value if len(value) <= 50 else value[:49] + "…"
-            self.notify(f" copied {escape(disp)}")
+            self.notify(f" copied {disp}")
 
         self.push_screen(PickerModal(f"yank · {issue['identifier']}", opts), done)
 
