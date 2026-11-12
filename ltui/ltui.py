@@ -215,6 +215,8 @@ INITIATIVE_RANK = {
 }
 
 GROUP_MODES = ["status", "project", "initiative"]
+# order of tickets inside a group: freshest first, or most urgent first
+SORT_MODES = ["recent", "priority"]
 
 # the due-date column takes 8 columns off the title. Below this list width —
 # roughly a half-screen list with the detail panel open — the title has none to
@@ -392,6 +394,7 @@ DEFAULT_KEYBINDS = {
     "filter": (["slash"], "filter"),
     "toggle_mine": (["m"], "mine"),
     "toggle_group": (["v"], "group"),
+    "toggle_sort": (["S"], None),
     "pick_project": (["V"], None),
     "cycle_theme": (["t"], "theme"),
     "open_settings": (["comma"], None),
@@ -452,6 +455,7 @@ CONFIG_TEMPLATE = """{
     "filter": "slash",
     "toggle_mine": "m",
     "toggle_group": "v",
+    "toggle_sort": "S",
     "pick_project": "V",
     "cycle_theme": "t",
     "open_settings": "comma",
@@ -557,7 +561,8 @@ def state_icon(state: dict) -> str:
 def priority_cell(p: int) -> Text:
     t = Text()
     if p == 1:
-        t.append(" ", style=f"bold {C_PEACH}")
+        # nf-md-alert_box: Linear's urgent mark, a filled square with a "!"
+        t.append("\U000f0027", style=f"bold {C_PEACH}")
         t.append("  ")
     elif p in (2, 3, 4):
         lit = {2: 3, 3: 2, 4: 1}[p]
@@ -628,9 +633,18 @@ def state_sort_key(s: dict):
     return (rank, -pos if s["type"] == "started" else pos)
 
 
-def issue_sort_key(i: dict):
-    # most recently updated first within each status group
-    return (-parse_dt(i["updatedAt"]).timestamp(),)
+def priority_rank(p: int | None) -> int:
+    # Linear's 0 means "no priority" — it belongs after Low, not before Urgent
+    return p if p else 5
+
+
+def issue_sort_key(i: dict, sort_by: str = "recent"):
+    # most recently updated first within each group; in priority mode the
+    # most urgent come first and recency only breaks ties
+    recency = -parse_dt(i["updatedAt"]).timestamp()
+    if sort_by == "priority":
+        return (priority_rank(i.get("priority")), recency)
+    return (recency,)
 
 
 def initiative_sort_key(init: dict):
@@ -1377,6 +1391,7 @@ class HelpModal(ModalScreen):
             ("/", "filter issues"),
             ("m", "toggle mine only"),
             ("v", "group by status / project / initiative"),
+            ("S", "sort by recent / priority"),
             ("V", "filter to a single project"),
             ("t", "cycle theme"),
             (",", "settings"),
@@ -1697,6 +1712,9 @@ class LTUI(App):
         self._group_by = load_state().get("group_by", "status")
         if self._group_by not in GROUP_MODES:
             self._group_by = "status"
+        self._sort_by = load_state().get("sort_by", "recent")
+        if self._sort_by not in SORT_MODES:
+            self._sort_by = "recent"
         self._filter = ""
         self._project_filter: str | None = None  # project id, "" = no-project
         self._detail_issue: dict | None = None
@@ -1968,6 +1986,7 @@ class LTUI(App):
         data["mine"] = self._mine
         data["theme"] = self.theme
         data["group_by"] = self._group_by
+        data["sort_by"] = self._sort_by
         save_state(data)
 
     @property
@@ -2449,12 +2468,16 @@ class LTUI(App):
 
         def mine_first(i: dict):
             is_mine = (i.get("assignee") or {}).get("id") == self._viewer_id
-            return (0 if is_mine else 1, *issue_sort_key(i))
+            return (0 if is_mine else 1, *issue_sort_key(i, self._sort_by))
 
         def in_group_key(i: dict):
             # inside a project / initiative keep the status order, then
-            # mine-first + recency
-            return (state_sort_key(i["state"]), *mine_first(i))
+            # mine-first + recency. Sorting by priority puts priority ahead of
+            # status, otherwise it would only reorder tickets sharing a status
+            key = (state_sort_key(i["state"]), *mine_first(i))
+            if self._sort_by == "priority":
+                return (priority_rank(i.get("priority")), *key)
+            return key
 
         if self._group_by == "project":
             by_proj: dict[str, list[dict]] = {}
@@ -2556,8 +2579,9 @@ class LTUI(App):
         group_tag = (
             f" \uf0ca {self._group_by} \u00b7" if self._group_by != "status" else ""
         )
+        sort_tag = " \uf160 priority \u00b7" if self._sort_by == "priority" else ""
         self.query_one("#centre").border_subtitle = (
-            f"{mine_tag}{proj_tag}{group_tag} {len(issues)} issues "
+            f"{mine_tag}{proj_tag}{group_tag}{sort_tag} {len(issues)} issues "
         )
         if keep and keep in self._opt_index:
             ol.highlighted = self._opt_index[keep]
@@ -2978,6 +3002,13 @@ class LTUI(App):
             self.load_initiatives(rerender=True)
         self.render_issues()
         self.notify(f"\uf0ca grouping by {self._group_by}")
+
+    def action_toggle_sort(self) -> None:
+        nxt = (SORT_MODES.index(self._sort_by) + 1) % len(SORT_MODES)
+        self._sort_by = SORT_MODES[nxt]
+        self._save_state()
+        self.render_issues()
+        self.notify(f"\uf160 sorting by {self._sort_by}")
 
     def action_toggle_mine(self) -> None:
         self._mine = not self._mine
@@ -3418,7 +3449,7 @@ keys: enter open ticket   n new   s status   p priority   d due date
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
       m mine only   v group status/project/initiative
-      V one project   t theme
+      V one project   S sort recent/priority   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
 
