@@ -18,6 +18,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import threading
 import tomllib
 import webbrowser
 from functools import partial
@@ -49,6 +51,10 @@ LINEAR_CODING_TOOLS = Path.home() / ".linear/coding-tools.json"
 # Mirrors Linear's "Prompt template" setting so ltui builds the same prompt.
 LINEAR_PROMPT_TEMPLATE = Path.home() / ".linear/prompt-template.txt"
 PLACEHOLDER = re.compile(r"\{\{([A-Za-z][\w.]*)\}\}")
+# terminal colour / cursor sequences, so a script's coloured stderr reads
+# as plain text in a toast
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
+SCRIPT_OUTPUT_LINES = 3  # the tail of stdout / stderr worth putting in a toast
 STATE_FILE = Path.home() / ".local/state/ltui/state.json"
 CACHE_DIR = Path.home() / ".cache/ltui"
 AUTO_REFRESH_SECONDS = 180
@@ -499,11 +505,23 @@ def merged_keybinds(user_keybinds: dict | None = None) -> dict[str, list[str]]:
     }
 
 
+def script_output_text(raw: bytes) -> str:
+    """The last few non-blank lines of a script's stdout or stderr, colour
+    codes stripped — what fits in a toast, and where a script's result or
+    error usually is."""
+    text = ANSI_ESCAPE.sub("", raw.decode("utf-8", "replace"))
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    return "\n".join(lines[-SCRIPT_OUTPUT_LINES:])
+
+
 def load_scripts(config: dict | None = None) -> tuple[list[dict], list[str]]:
     """config.json "scripts" — extra custom scripts beyond `x`'s
     coding-tools.json one. Each entry is a coding-tools-style {path, args,
-    env} plus optional "key" (a key or list), "name" (palette title) and
-    "description" (palette subtitle + help overlay). Returns the usable
+    env} plus optional "key" (a key or list), "name" (palette title),
+    "description" (palette subtitle + help overlay), "message" (the toast
+    shown on launch, with the same {{...}} placeholders as args) and
+    "done_message" (the toast shown when it exits 0, which can also use
+    {{stdout}}). Returns the usable
     entries, normalised, and a warning per entry that had to be skipped."""
     if config is None:
         config = USER_CONFIG
@@ -522,12 +540,19 @@ def load_scripts(config: dict | None = None) -> tuple[list[dict], list[str]]:
             warnings.append(f'config.json: scripts[{i}] has an invalid "key" — palette only')
         name = entry.get("name")
         desc = entry.get("description")
+        messages = {}
+        for field in ("message", "done_message"):
+            value = entry.get(field)
+            if field in entry and not isinstance(value, str):
+                warnings.append(f'config.json: scripts[{i}] "{field}" must be a string — ignoring it')
+            messages[field] = value.strip() if isinstance(value, str) else ""
         scripts.append({
             **entry,
             "keys": keys,
             "name": name.strip() if isinstance(name, str) and name.strip()
             else Path(path).name,
             "description": desc.strip() if isinstance(desc, str) else "",
+            **messages,
         })
     return scripts, warnings
 
@@ -3560,7 +3585,10 @@ class LTUI(App):
         if not issue:
             self.notify(" no ticket highlighted", severity="warning")
             return
-        self._launch_script(SCRIPTS[index], issue, SCRIPTS[index]["name"])
+        script = SCRIPTS[index]
+        self._launch_script(
+            script, issue, script["name"], script["message"], script["done_message"]
+        )
 
     def get_system_commands(self, screen):
         yield from super().get_system_commands(screen)
@@ -3577,9 +3605,17 @@ class LTUI(App):
                 partial(self.action_run_custom_script, index),
             )
 
-    def _launch_script(self, cfg: dict, issue: dict, label: str) -> None:
+    def _launch_script(
+        self, cfg: dict, issue: dict, label: str, message: str = "",
+        done_message: str = "",
+    ) -> None:
         """Launch a coding-tools-style {path, args, env} script, detached,
-        against `issue` with the LINEAR_* env contract."""
+        against `issue` with the LINEAR_* env contract.
+
+        Toasts `message` (placeholders filled in) on launch, or a generic
+        "launched" line without one. When the script exits 0, `done_message`
+        (if any) is toasted with {{stdout}} filled in from its output; if it
+        exits non-zero, an error toast shows the tail of its stderr."""
         path = Path(str(cfg["path"])).expanduser()
 
         title = issue.get("title") or ""
@@ -3635,19 +3671,78 @@ class LTUI(App):
         inherited = {k: v for k, v in os.environ.items() if not k.startswith("LINEAR_")}
 
         argv = [str(path), *(interp(str(a)) for a in (cfg.get("args") or []))]
+        # stderr goes to an anonymous temp file rather than a pipe: a script
+        # that leaves something running (a tmux server, a `cmd &`) hands it
+        # the descriptor, and a pipe would then never reach EOF
+        err = tempfile.TemporaryFile()
+        # stdout is only worth keeping when a done_message wants it
+        out = tempfile.TemporaryFile() if done_message else None
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 argv,
                 env={**inherited, **exported, "LINEAR_TOOL_COMMAND": "ltui"},
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=out if out is not None else subprocess.DEVNULL,
+                stderr=err,
                 start_new_session=True,  # never fight the TUI for the tty
             )
         except Exception as e:
+            err.close()
+            if out is not None:
+                out.close()
             self.notify(f" {escape(label)} failed: {e}", severity="error")
             return
-        self.notify(f" {escape(label)} launched for {issue['identifier']}")
+        if message:
+            self.notify(interp(message), markup=False)
+        else:
+            self.notify(f" {escape(label)} launched for {issue['identifier']}")
+
+        def render_done(stdout: str) -> str:
+            # one pass over the template, as with args: placeholder-looking
+            # text in the ticket or the output stays literal
+            values = {**tmpl, "stdout": stdout}
+            return PLACEHOLDER.sub(lambda m: values.get(m[1], m[0]), done_message).strip()
+
+        self._watch_script(proc, err, out, label, render_done if done_message else None)
+
+    def _watch_script(self, proc: subprocess.Popen, err, out, label: str, render_done) -> None:
+        """Wait for a launched script on a daemon thread — so a long-running
+        one never holds up quitting — then toast its done_message (with its
+        stdout) on success, or its stderr on failure."""
+
+        def read(f) -> str:
+            f.seek(0)
+            return script_output_text(f.read())
+
+        def wait() -> None:
+            code = proc.wait()
+            try:
+                if code != 0:
+                    report = partial(self._script_failed, label, code, read(err))
+                elif render_done is not None:
+                    text = render_done(read(out)) or f"{label} finished"
+                    report = partial(self.notify, text, markup=False)
+                else:
+                    return
+            finally:
+                err.close()
+                if out is not None:
+                    out.close()
+            try:
+                self.call_from_thread(report)
+            except Exception:
+                pass  # ltui quit while the script was still running
+
+        threading.Thread(target=wait, name=f"script:{label}", daemon=True).start()
+
+    def _script_failed(self, label: str, code: int, detail: str) -> None:
+        self.notify(
+            detail or f"exited with code {code}",
+            title=f"{label} failed",
+            severity="error",
+            timeout=12,
+            markup=False,
+        )
 
     def action_yank(self) -> None:
         issue = self._current_issue()
