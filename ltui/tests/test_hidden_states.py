@@ -97,5 +97,28 @@ class HiddenStatesAppTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("In Progress", self.statuses())
 
 
+    async def test_pick_from_settings_saves(self) -> None:
+        # the picker opened from settings must outlive settings closing
+        async with self.app.run_test(size=(148, 41)) as pilot:
+            for _ in range(40):
+                await pilot.pause(0.1)
+                if self.app.query_one("#issues").option_count:
+                    break
+            await pilot.press("comma")
+            await pilot.pause(0.3)
+            ol = self.app.screen.query_one("#settings-list")
+            ids = [ol.get_option_at_index(n).id for n in range(ol.option_count)]
+            ol.highlighted = ids.index("pref:hide-pick")
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            lo = self.app.screen.query_one("#labels-list")
+            ids = [lo.get_option_at_index(n).id for n in range(lo.option_count)]
+            lo.highlighted = ids.index("backlog")
+            await pilot.press("enter")
+            await pilot.click("#labels-apply")
+            await pilot.pause(0.3)
+            self.assertEqual(set(self.saved["hidden_states"]), {"done", "backlog"})
+            self.assertNotIn("Backlog", self.statuses())
+
 if __name__ == "__main__":
     unittest.main()

@@ -1354,8 +1354,9 @@ class SettingsModal(ModalScreen):
         elif oid == "pref:hide":
             app.action_toggle_hidden()
         elif oid == "pref:hide-pick":
-            self.dismiss(None)
-            app.action_pick_hidden_states()
+            # the app opens the picker once settings is gone: a screen pushed
+            # from here would report its result back to this closing modal
+            self.dismiss("pick-hidden")
             return
         elif oid == "cache:clear":
             count = clear_cache()
@@ -2910,7 +2911,12 @@ class LTUI(App):
     def action_open_settings(self) -> None:
         if isinstance(self.screen, SettingsModal):
             return
-        self.push_screen(SettingsModal())
+
+        def done(result: str | None) -> None:
+            if result == "pick-hidden":
+                self.action_pick_hidden_states()
+
+        self.push_screen(SettingsModal(), done)
 
     def action_help(self) -> None:
         if isinstance(self.screen, HelpModal):
