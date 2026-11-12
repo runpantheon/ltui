@@ -2925,9 +2925,9 @@ class SCTUI(App):
         current = {lb["id"] for lb in issue["labels"]["nodes"]}
 
         def done(ids: list | None) -> None:
-            if ids is not None and set(ids) != current:
-                chosen = [o for o in options if o["id"] in ids]
-                self.apply_labels(issue, sorted(chosen, key=lambda o: o["name"]))
+            if ids is not None and (chosen := set(ids)) != current:
+                add = [o for o in options if o["id"] in chosen and o["id"] not in current]
+                self.apply_labels(issue, add, current - chosen)
 
         self.push_screen(
             LabelsModal(f" labels · {issue['identifier']}", options, current),
@@ -2935,15 +2935,15 @@ class SCTUI(App):
         )
 
     @work(group="mutate")
-    async def apply_labels(self, issue: dict, labels: list[dict]) -> None:
-        before = {lb["id"] for lb in issue["labels"]["nodes"]}
-        after = {lb["id"] for lb in labels}
+    async def apply_labels(self, issue: dict, add: list[dict], remove: set[str]) -> None:
+        add_ids = {lb["id"] for lb in add}
         try:
-            await self.sc.relabel_story(issue["id"], add=after - before, remove=before - after)
+            await self.sc.relabel_story(issue["id"], add=add_ids, remove=remove)
         except Exception as e:
             self.notify(f"update failed: {e}", severity="error")
             return
-        issue["labels"] = {"nodes": labels}
+        kept = [lb for lb in issue["labels"]["nodes"] if lb["id"] not in add_ids | remove]
+        issue["labels"] = {"nodes": sorted(kept + add, key=lambda lb: lb["name"])}
         (issue.get("more") or {}).pop("labels", None)
         self._write_team_cache()
         self.render_issues(keep=issue["id"])
