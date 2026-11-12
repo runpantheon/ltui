@@ -202,8 +202,8 @@ bottom.
 
 The first row of the teams pane is **all teams** — one board over your entire
 workspace instead of a single team. It fetches every team in parallel, so it
-costs about the same wall-clock as one team and gives you 250 tickets *per
-team* rather than 250 across all of them.
+costs about the same wall-clock as one team, and every team keeps its own
+board: all of its open tickets plus its 50 most recently closed.
 
 The catch it handles for you: Linear scopes workflow states to a team, so the
 `In Progress` on one team is a different state than the `In Progress` on
@@ -380,13 +380,14 @@ launch ──▶ render cached issues (~50ms) ──▶ you're already working
 ## faq
 
 <details>
-<summary><b>Only ~250 issues show per team?</b></summary>
+<summary><b>Which tickets does ltui load?</b></summary>
 
-ltui fetches the 250 most-recently-updated issues per team. For triage that's
-effectively everything alive; ancient `Done` tickets fall off the bottom,
-which is where they belong. The all-teams board keeps that budget per team
-rather than sharing one across the workspace, so five teams means up to 1250
-tickets in the list.
+Every **open** ticket in the team — anything not Done, Canceled or Duplicate,
+however long it has sat untouched — plus the **50 most recently updated
+closed** ones, so the `Done` group still shows recent work while ancient
+history stays out of the way. Open tickets are fetched 250 at a time; a team
+with more than 2000 open tickets shows its 2000 most recently updated and says
+so. The all-teams board does this per team.
 
 </details>
 
