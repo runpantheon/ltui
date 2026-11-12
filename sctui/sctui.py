@@ -341,7 +341,6 @@ def normalize_team(team: dict) -> dict:
 
 
 def normalize_comment(comment: dict) -> dict:
-    """`text` is null on a deleted comment."""
     return {
         "id": str(comment.get("id") or ""),
         "body": comment.get("text") or "",
@@ -497,7 +496,7 @@ class Shortcut:
         )
         return {
             "issue": whole,
-            "comments": [normalize_comment(c) for c in comments],
+            "comments": [normalize_comment(c) for c in comments if not c.get("deleted")],
             "children": [normalize_task(t) for t in items],
         }
 
