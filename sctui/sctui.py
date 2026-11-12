@@ -2008,10 +2008,8 @@ class SCTUI(App):
             except Exception as e:
                 self.notify(f"couldn't save token: {e}", severity="error")
             self._token_source = "file"
-            # the new token may belong to another workspace
             clear_cache()
-            self._members = {}
-            self._workspace_epics = None
+            self._end_session()
             old, self.sc = self.sc, self.connect(new_token)
             if old is not None:
                 self.run_worker(old.aclose(), exit_on_error=False)
@@ -2023,6 +2021,37 @@ class SCTUI(App):
             ),
             connected,
         )
+
+    def _end_session(self) -> None:
+        for group in ("issues", "detail", "members"):
+            self.workers.cancel_group(self, group)
+        self._refreshing = False
+        if self._detail_issue is not None:
+            self.close_detail()
+        self._boot_data = self._team = self._project_filter = None
+        self._viewer_id = self._viewer_name = self._org = None
+        self._teams = []
+        self._members = {}
+        self._workspace_epics = None
+        self._set_issues([], [])
+        self.render_issues()
+        self.query_one("#teams", NavList).clear_options()
+        for selector in ("#appheader", "#d-title", "#d-meta", "#d-comments-head"):
+            self.query_one(selector, Static).update("")
+        self.query_one("#d-desc", Markdown).update("")
+        for selector in ("#d-children", "#d-comments"):
+            self.query_one(selector, Vertical).remove_children()
+        centre = self.query_one("#centre")
+        centre.border_title = " issues "
+        centre.border_subtitle = ""
+        self._update_profile()
+        # a picker or comment box opened on an old story sits under the onboarding modal,
+        # which is still closing
+        self.call_later(self._dismiss_modals)
+
+    def _dismiss_modals(self) -> None:
+        while isinstance(self.screen, ModalScreen):
+            self.screen.dismiss(None)
 
     def _start(self, token: str) -> None:
         self.sc = self.connect(token)
