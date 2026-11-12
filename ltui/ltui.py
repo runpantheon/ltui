@@ -30,6 +30,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.color import Color as TColor
+from textual.command import CommandPalette
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
@@ -412,7 +413,7 @@ DEFAULT_KEYBINDS = {
     # vim layer (additive)
     "next_group": (["right_square_bracket"], None),
     "prev_group": (["left_square_bracket"], None),
-    "command_palette": (["colon"], None),
+    "command_palette": (["colon", "ctrl+p"], None),
     # lateral arrows walk the panes: teams ◂ issues ▸ detail
     "focus_left": (["left"], None),
     "focus_right": (["right"], None),
@@ -472,7 +473,7 @@ CONFIG_TEMPLATE = """{
     "run_script": "x",
     "next_group": "right_square_bracket",
     "prev_group": "left_square_bracket",
-    "command_palette": "colon",
+    "command_palette": ["colon", "ctrl+p"],
     "focus_left": "left",
     "focus_right": "right"
   },
@@ -811,6 +812,17 @@ class DetailScroll(VerticalScroll):
         # reroute them to pane navigation instead
         Binding("left", "app.focus_left", show=False),
         Binding("right", "app.focus_right", show=False),
+    ]
+
+
+class LtuiCommandPalette(CommandPalette):
+    """Textual's palette plus emacs/readline-style ctrl+n / ctrl+p to move
+    through the results. Screen bindings beat the app's ctrl+p (open the
+    palette), so inside the palette ctrl+p means "previous" instead."""
+
+    BINDINGS = [
+        Binding("ctrl+n", "cursor_down", "Next command", show=False),
+        Binding("ctrl+p", "command_list('cursor_up')", "Previous command", show=False),
     ]
 
 
@@ -1399,7 +1411,7 @@ class HelpModal(ModalScreen):
         ]),
         ("app", [
             ("?", "this help"),
-            ("ctrl+p", "command palette"),
+            ("ctrl+p", "command palette (ctrl+n / ctrl+p move in it)"),
             ("q", "quit"),
         ]),
     ]
@@ -2992,6 +3004,10 @@ class LTUI(App):
                 self.show_detail(issue)
             self.query_one("#d-scroll").focus()
 
+    def action_command_palette(self) -> None:
+        if self.use_command_palette and not CommandPalette.is_open(self):
+            self.push_screen(LtuiCommandPalette(id="--command-palette"))
+
     def action_toggle_group(self) -> None:
         nxt = (GROUP_MODES.index(self._group_by) + 1) % len(GROUP_MODES)
         self._group_by = GROUP_MODES[nxt]
@@ -3457,7 +3473,8 @@ arrows: up/down move · left/right walk the panes teams - issues - detail
         (right on a ticket opens it; every list takes arrows everywhere)
 
 vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
-      [ / ] previous / next group   : command palette
+      [ / ] previous / next group   : or ctrl+p command palette
+      (inside it: ctrl+n / ctrl+p next / previous)
 
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""

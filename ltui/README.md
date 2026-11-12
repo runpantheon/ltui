@@ -170,7 +170,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `g` `G`  | jump to top / bottom                          |
 | `ctrl+d/u` `ctrl+f/b` | half page / full page             |
 | `[` `]`  | previous / next **group**                     |
-| `:`      | command palette                               |
+| `:` `ctrl+p` | command palette — `ctrl+n` / `ctrl+p` move through it |
 | `?`      | **help** — keybinding cheatsheet              |
 | `q`      | quit                                          |
 
