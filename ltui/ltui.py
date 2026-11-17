@@ -451,6 +451,7 @@ DEFAULT_KEYBINDS = {
     "add_comment": (["c"], "comment"),
     "filter": (["slash"], "filter"),
     "toggle_mine": (["m"], "mine"),
+    "clear_filters": (["C"], None),
     "toggle_group": (["v"], "group"),
     "toggle_sort": (["S"], None),
     "pick_project": (["V"], None),
@@ -631,6 +632,7 @@ HELP_SECTIONS = [
     ("view", [
         (("filter",), "filter issues"),
         (("toggle_mine",), "toggle mine only"),
+        (("clear_filters",), "clear every filter (project, mine, text)"),
         (("toggle_group",), "group by status / project / initiative"),
         (("toggle_sort",), "sort by recent / priority"),
         (("pick_project",), "filter to a single project"),
@@ -681,6 +683,7 @@ CONFIG_TEMPLATE = """{
     "add_comment": "c",
     "filter": "slash",
     "toggle_mine": "m",
+    "clear_filters": "C",
     "toggle_group": "v",
     "toggle_sort": "S",
     "pick_project": "V",
@@ -3232,6 +3235,30 @@ class LTUI(App):
         self._update_profile()
         self.render_issues()
 
+    def action_clear_filters(self) -> None:
+        """Turn off every filter at once (project, mine only, the / text) so
+        the whole board is back, and say which ones were on."""
+        cleared = []
+        if self._project_filter is not None:
+            self._project_filter = None
+            cleared.append("project")
+        if self._mine:
+            self._mine = False
+            self._save_state()
+            self._update_profile()
+            cleared.append("mine only")
+        f = self.query_one("#filter", FilterInput)
+        if self._filter or f.value:
+            cleared.append(f"text \u201c{self._filter or f.value}\u201d")
+        if f.has_class("visible"):
+            f.action_dismiss_filter()  # empties it; Changed resets _filter
+        self._filter = ""
+        if not cleared:
+            self.notify("no filters on")
+            return
+        self.render_issues()
+        self.notify(f"\uf0b0 cleared: {', '.join(cleared)}", markup=False)
+
     def action_filter(self) -> None:
         f = self.query_one("#filter", FilterInput)
         f.add_class("visible")
@@ -3695,7 +3722,7 @@ keys: enter open ticket   n new   s status   p priority   d due date
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
         (more scripts, each with its own key: "scripts" in config.json)
-      m mine only   v group status/project/initiative
+      m mine only   C clear all filters   v group status/project/initiative
       V one project   S sort recent/priority   t theme
       , settings   j/k navigate   g/G top/bottom   r refresh   ? help
       q quit
