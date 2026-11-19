@@ -20,12 +20,16 @@ import subprocess
 import sys
 import tomllib
 import webbrowser
+from collections.abc import Iterable
 from functools import partial
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+from rich.cells import cell_len
+from rich.console import Group
 from rich.markup import escape
+from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult, SystemCommand
@@ -614,6 +618,7 @@ HELP_SECTIONS = [
         ("g / G", "jump to top / bottom"),
         ("enter", "open ticket detail (click works too)"),
         ("esc", "close panel · dismiss modal · clear filter"),
+        ("/ in a picker", "filter its list (esc clears, enter picks)"),
     ]),
     ("ticket", [
         (("new_ticket",), "new ticket in the current team"),
@@ -640,7 +645,7 @@ HELP_SECTIONS = [
     ]),
     ("app", [
         (("help",), "this help"),
-        ("ctrl+n / ctrl+p", "next / previous inside the command palette"),
+        ("ctrl+n / ctrl+p", "next / previous in the command palette or a picker"),
         (("quit",), "quit"),
     ]),
 ]
@@ -1118,26 +1123,158 @@ class Splitter(Static):
                 save_layout(reset=self._target)
 
 
-class PickerModal(ModalScreen):
-    BINDINGS = [Binding("escape", "cancel", show=False)]
+# list modals grow to fit their longest row: box border + padding, the
+# option's own padding, and room for the scrollbar
+PICKER_MIN_WIDTH = 44
+LABELS_MIN_WIDTH = 46
+LIST_CHROME = 8
 
-    def __init__(self, title: str, options: list[Option]) -> None:
+
+def hanging(row):
+    """A list row that wraps under its label, not under its icon: a Text
+    starting with one icon glyph and a space becomes a two-column grid.
+    Rows set to no_wrap (they truncate with …) and anything else pass
+    through unchanged."""
+    if not isinstance(row, Text) or row.no_wrap:
+        return row
+    plain = row.plain
+    if len(plain) < 3 or plain[1] != " " or plain[0].isascii():
+        return row
+    icon, label = row.divide([2])
+    grid = Table.grid()
+    grid.add_column(width=cell_len(icon.plain), no_wrap=True)
+    grid.add_column(ratio=1)
+    grid.add_row(icon, label)
+    return grid
+
+
+def fit_width(rows, minimum: int, chrome: int) -> int:
+    """A modal width (cells) that fits the longest row on one line, never
+    narrower than `minimum`. `chrome` covers borders, padding and the
+    scrollbar; the CSS max-width caps it on narrow screens."""
+    longest = max(
+        (cell_len(r.plain) for r in rows if isinstance(r, Text)), default=0
+    )
+    return max(minimum, longest + chrome)
+
+
+class PickerSearch(Input):
+    """The picker's `/` filter. Arrows and enter drive the list below while
+    the cursor stays here; esc clears the filter rather than closing."""
+
+    BINDINGS = [
+        Binding("escape", "clear_search", show=False),
+        Binding("down", "screen.move(1)", show=False),
+        Binding("up", "screen.move(-1)", show=False),
+    ]
+
+    def action_clear_search(self) -> None:
+        self.screen.close_search()
+
+
+class PickerModal(ModalScreen):
+    """A list to pick one option from. `/` opens a filter; options whose ids
+    are in `pinned` stay visible while it's narrowing (e.g. "all projects"),
+    and `match_text` overrides the text an option is matched on (by default
+    its visible label)."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("slash", "search", show=False),
+        # screen bindings beat the app's ctrl+p (command palette)
+        Binding("ctrl+n", "move(1)", show=False),
+        Binding("ctrl+p", "move(-1)", show=False),
+    ]
+
+    def __init__(
+        self,
+        title: str,
+        options: list[Option],
+        pinned: Iterable[str] = (),
+        match_text: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._options = options
+        self._pinned = set(pinned)
+        self._match_text = match_text or {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
             yield Static(self._title, id="picker-title")
-            yield NavList(*self._options, id="picker-list")
+            yield PickerSearch(placeholder="filter…", id="picker-search")
+            yield NavList(*map(self._shown, self._options), id="picker-list")
 
     def on_mount(self) -> None:
-        pop_in(self.query_one("#picker-box"))
+        box = self.query_one("#picker-box")
+        box.styles.width = fit_width(
+            (o.prompt for o in self._options), PICKER_MIN_WIDTH, LIST_CHROME
+        )
+        pop_in(box)
         self.query_one("#picker-list").focus()
+
+    @staticmethod
+    def _shown(option: Option) -> Option:
+        """The on-screen copy of an option. The original keeps its plain
+        Text prompt, which the / filter matches on."""
+        return Option(hanging(option.prompt), id=option.id, disabled=option.disabled)
+
+    def _text_for(self, option: Option) -> str:
+        if option.id in self._match_text:
+            return self._match_text[option.id]
+        prompt = option.prompt
+        return prompt.plain if isinstance(prompt, Text) else str(prompt)
+
+    def visible_options(self, query: str) -> list[Option]:
+        query = query.strip().lower()
+        if not query:
+            return list(self._options)
+        return [
+            o for o in self._options
+            if o.id in self._pinned or query in self._text_for(o).lower()
+        ]
+
+    @on(Input.Changed, "#picker-search")
+    def _filter(self, event: Input.Changed) -> None:
+        shown = self.visible_options(event.value)
+        ol = self.query_one("#picker-list", NavList)
+        ol.clear_options()
+        ol.add_options(map(self._shown, shown))
+        # land on the first real match, not a pinned row above it
+        first = next(
+            (n for n, o in enumerate(shown)
+             if not o.disabled and (o.id not in self._pinned or not event.value.strip())),
+            next((n for n, o in enumerate(shown) if not o.disabled), None),
+        )
+        ol.highlighted = first
+
+    @on(Input.Submitted, "#picker-search")
+    def _submit(self) -> None:
+        ol = self.query_one("#picker-list", NavList)
+        if ol.highlighted is not None:
+            self.dismiss(ol.get_option_at_index(ol.highlighted).id)
 
     @on(OptionList.OptionSelected)
     def _selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
+
+    def action_search(self) -> None:
+        search = self.query_one("#picker-search", PickerSearch)
+        search.add_class("visible")
+        search.focus()
+
+    def close_search(self) -> None:
+        search = self.query_one("#picker-search", PickerSearch)
+        search.value = ""  # fires Changed, which restores the full list
+        search.remove_class("visible")
+        self.query_one("#picker-list").focus()
+
+    def action_move(self, step: int) -> None:
+        ol = self.query_one("#picker-list", NavList)
+        if step > 0:
+            ol.action_cursor_down()
+        else:
+            ol.action_cursor_up()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1458,7 +1595,13 @@ class LabelsModal(ModalScreen):
                 yield Button("\uf00c apply", variant="primary", id="labels-apply")
 
     def on_mount(self) -> None:
-        pop_in(self.query_one("#labels-box"))
+        box = self.query_one("#labels-box")
+        box.styles.width = fit_width(
+            (Text(f"\uf00c  \u25cf {lb['name']}") for lb in self._labels),
+            LABELS_MIN_WIDTH,
+            LIST_CHROME,
+        )
+        pop_in(box)
         self._build()
         self.query_one("#labels-list").focus()
 
@@ -1592,6 +1735,24 @@ class SettingsModal(ModalScreen):
         self.dismiss(None)
 
 
+def help_body(sections: list[tuple[str, list[tuple[str, str]]]]) -> Group:
+    """The cheatsheet as one key/description grid per section. Every grid
+    shares the key column's width, and a long description wraps within its
+    own column instead of back under the keys."""
+    key_w = max(cell_len(k) for _, rows in sections for k, _ in rows)
+    parts = []
+    for n, (section, rows) in enumerate(sections):
+        heading = Text(f" {section}", style=f"bold {C_DIM}")
+        parts.append(Text("\n").append_text(heading) if n else heading)
+        grid = Table.grid(padding=(0, 3, 0, 0))
+        grid.add_column(width=key_w + 3, no_wrap=True)  # 3 = indent
+        grid.add_column(ratio=1)
+        for key, desc in rows:
+            grid.add_row(Text(f"   {key}", style=C_BLUE), Text(desc, style=C_SUB))
+        parts.append(grid)
+    return Group(*parts)
+
+
 class HelpModal(ModalScreen):
     """Keybinding cheatsheet — press ? anywhere."""
 
@@ -1616,17 +1777,7 @@ class HelpModal(ModalScreen):
         title.append("keys", style=f"bold {C_TEXT}")
         self.query_one("#help-title", Static).update(title)
         sections = help_sections(merged_keybinds(), SCRIPTS)
-        key_w = max(len(k) for _, rows in sections for k, _ in rows) + 3
-        body = Text()
-        for section, rows in sections:
-            if body:
-                body.append("\n")
-            body.append(f" {section}\n", style=f"bold {C_DIM}")
-            for key, desc in rows:
-                body.append(f"   {key.ljust(key_w)}", style=C_BLUE)
-                body.append(f"{desc}\n", style=C_SUB)
-        body.rstrip()
-        self.query_one("#help-body", Static).update(body)
+        self.query_one("#help-body", Static).update(help_body(sections))
         self.query_one("#help-foot", Static).update(
             Text("? · esc · q to close", style=C_VFAINT)
         )
@@ -1772,11 +1923,17 @@ class LTUI(App):
 
     PickerModal {{ align: center middle; background: $ltui-overlay; }}
     #picker-box {{
-        width: 44; height: auto; max-height: 80%;
+        width: 44; max-width: 80%; height: auto; max-height: 80%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
     }}
     #picker-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
     #picker-list {{ height: auto; max-height: 14; }}
+    #picker-search {{
+        display: none; height: 3; margin: 0 0 1 0;
+        border: round $ltui-border; background: transparent;
+    }}
+    #picker-search.visible {{ display: block; }}
+    #picker-search:focus {{ border: round $ltui-border-focus; }}
 
     DueDateModal {{ align: center middle; background: $ltui-overlay; }}
     #duedate-box {{
@@ -1798,7 +1955,7 @@ class LTUI(App):
     CommentModal {{ align: center middle; background: $ltui-overlay; }}
     LabelsModal {{ align: center middle; background: $ltui-overlay; }}
     #labels-box {{
-        width: 46; height: auto; max-height: 80%;
+        width: 46; max-width: 80%; height: auto; max-height: 80%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
     }}
     #labels-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
@@ -1809,7 +1966,7 @@ class LTUI(App):
 
     ProjectNameModal {{ align: center middle; background: $ltui-overlay; }}
     #projname-box {{
-        width: 52; height: auto;
+        width: 52; max-width: 90%; height: auto;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #projname-title {{ padding: 0 0 1 0; }}
@@ -1818,7 +1975,7 @@ class LTUI(App):
     #projname-hint {{ padding: 1 0 0 0; }}
 
     #comment-box {{
-        width: 72; height: 20;
+        width: 72; max-width: 90%; height: 20;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #comment-title {{ color: {C_SUB}; text-style: bold; padding: 0 0 1 0; }}
@@ -1830,7 +1987,7 @@ class LTUI(App):
 
     NewTicketModal {{ align: center middle; background: $ltui-overlay; }}
     #ticket-box {{
-        width: 72; height: 24;
+        width: 72; max-width: 90%; height: 24;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #ticket-heading {{ color: {C_SUB}; text-style: bold; padding: 0 0 1 0; }}
@@ -1844,7 +2001,7 @@ class LTUI(App):
 
     OnboardModal {{ align: center middle; background: $ltui-overlay; }}
     #onboard-box {{
-        width: 62; height: auto;
+        width: 62; max-width: 90%; height: auto;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #onboard-title {{ padding: 0 0 1 0; }}
@@ -1858,7 +2015,7 @@ class LTUI(App):
 
     ThemeModal {{ align: center middle; background: $ltui-overlay; }}
     #theme-box {{
-        width: 40; height: auto; max-height: 85%;
+        width: 40; max-width: 90%; height: auto; max-height: 85%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
     }}
     #theme-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
@@ -1866,7 +2023,7 @@ class LTUI(App):
 
     SettingsModal {{ align: center middle; background: $ltui-overlay; }}
     #settings-box {{
-        width: 42; height: auto; max-height: 85%;
+        width: 42; max-width: 90%; height: auto; max-height: 85%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 1;
     }}
     #settings-profile {{ padding: 0 1 1 1; }}
@@ -1875,7 +2032,7 @@ class LTUI(App):
 
     HelpModal {{ align: center middle; background: $ltui-overlay; }}
     #help-box {{
-        width: 64; height: auto; max-height: 90%;
+        width: 84; max-width: 90%; height: auto; max-height: 90%;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #help-title {{ padding: 0 1 1 1; }}
@@ -1885,7 +2042,7 @@ class LTUI(App):
 
     WelcomeModal {{ align: center middle; background: $ltui-overlay; }}
     #welcome-box {{
-        width: 56; height: auto;
+        width: 56; max-width: 90%; height: auto;
         background: $ltui-modal-bg; border: round $ltui-border-focus; padding: 1 2;
     }}
     #welcome-title {{ padding: 0 0 1 0; }}
@@ -3161,7 +3318,15 @@ class LTUI(App):
                 self._project_filter = choice.removeprefix("proj:")
             self.render_issues()
 
-        self.push_screen(PickerModal("filter by project", opts), done)
+        self.push_screen(
+            PickerModal(
+                "filter by project",
+                opts,
+                pinned={"all:", "proj:"},  # "proj:" is the no-project row
+                match_text={f"proj:{pid}": p["name"] for pid, p in projects.items()},
+            ),
+            done,
+        )
 
     def action_next_group(self) -> None:
         self._jump_group(forward=True)
@@ -3359,7 +3524,7 @@ class LTUI(App):
             row.append("  \uf00c", style=C_GREEN)
         opts.append(Option(row, id="none:"))
         for p in projects:
-            row = Text(no_wrap=True, overflow="ellipsis")
+            row = Text()
             row.append("\uf07b ", style=p.get("color") or C_DIM)
             row.append(p["name"], style=C_TEXT)
             if p["id"] == current:
@@ -3383,7 +3548,12 @@ class LTUI(App):
                     self.apply_project(issue, pid)
 
         self.push_screen(
-            PickerModal(f"move {issue['identifier']} to\u2026", opts), done
+            PickerModal(
+                f"move {issue['identifier']} to\u2026",
+                opts,
+                pinned={"new:", "none:"},
+            ),
+            done,
         )
 
     @work(group="mutate")
@@ -3706,6 +3876,9 @@ arrows: up/down move · left/right walk the panes teams - issues - detail
 vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
       [ / ] previous / next group   : or ctrl+p command palette
       (inside it: ctrl+n / ctrl+p next / previous)
+
+pickers: / filters the list (project, assignee, status...) as you type;
+         ctrl+n / ctrl+p or arrows move, enter picks, esc clears
 
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""

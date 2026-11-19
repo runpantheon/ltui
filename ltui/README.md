@@ -148,6 +148,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `←` `→`  | walk the panes: teams ◂ issues ▸ detail — `→` on a ticket opens it |
 | `enter` / click | open ticket detail panel                |
 | `esc`    | close panel / dismiss modal / clear filter    |
+| `/` in a picker | **filter the list** as you type — `ctrl+n` / `ctrl+p` or arrows move, `enter` picks, `esc` clears |
 | `n`      | **new ticket** in the current team (pick a team first on the all-teams board) |
 | `s`      | change **status**                             |
 | `p`      | change **priority**                           |
