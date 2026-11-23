@@ -16,8 +16,10 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 import tomllib
 import webbrowser
 from functools import partial
@@ -28,7 +30,7 @@ import httpx
 from rich.markup import escape
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult, SystemCommand
+from textual.app import App, ComposeResult, SuspendNotSupported, SystemCommand
 from textual.binding import Binding
 from textual.color import Color as TColor
 from textual.command import CommandPalette
@@ -428,6 +430,43 @@ mutation($id: String!, $body: String!) {
   commentCreate(input: {issueId: $id, body: $body}) { success }
 }"""
 
+M_DESCRIPTION = """
+mutation($id: String!, $description: String!) {
+  issueUpdate(id: $id, input: {description: $description}) {
+    success
+    issue { id description updatedAt }
+  }
+}"""
+
+
+def preferred_editor() -> list[str] | None:
+    """$VISUAL, then $EDITOR, split shell-style so "code --wait" works.
+    None when neither is set, and the caller falls back to an in-app box."""
+    for var in ("VISUAL", "EDITOR"):
+        raw = os.environ.get(var, "").strip()
+        if raw:
+            try:
+                return shlex.split(raw)
+            except ValueError:
+                return raw.split()
+    return None
+
+
+def edit_in_editor(cmd: list[str], text: str, suffix: str = ".md") -> str | None:
+    """Open `text` in `cmd` on a temp file and return what was saved, or None
+    when the editor exits non-zero (vim's :cq), which reads as a cancel.
+    Raises OSError when the editor can't be started."""
+    fd, name = tempfile.mkstemp(prefix="ltui-", suffix=suffix)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        if subprocess.run([*cmd, str(path)]).returncode != 0:
+            return None
+        return path.read_text(encoding="utf-8")
+    finally:
+        path.unlink(missing_ok=True)
+
 
 def load_user_config() -> dict:
     """~/.config/ltui/config.json — keybinds + options. Read once at startup."""
@@ -449,6 +488,7 @@ DEFAULT_KEYBINDS = {
     "new_ticket": (["n"], "new"),
     "change_status": (["s"], "status"),
     "add_comment": (["c"], "comment"),
+    "edit_description": (["e"], None),
     "filter": (["slash"], "filter"),
     "toggle_mine": (["m"], "mine"),
     "toggle_group": (["v"], "group"),
@@ -624,6 +664,7 @@ HELP_SECTIONS = [
         (("move_project",), "move to a project (or create one)"),
         (("change_assignee",), "change assignee (or unassign)"),
         (("add_comment",), "add a comment (ctrl+s to send)"),
+        (("edit_description",), "edit description ($VISUAL / $EDITOR, else in-app)"),
         (("yank",), "yank — copy branch / url / identifier"),
         (("open_browser",), "open in browser"),
         (("run_script",), "run custom script (~/.linear/coding-tools.json)"),
@@ -679,6 +720,7 @@ CONFIG_TEMPLATE = """{
     "new_ticket": "n",
     "change_status": "s",
     "add_comment": "c",
+    "edit_description": "e",
     "filter": "slash",
     "toggle_mine": "m",
     "toggle_group": "v",
@@ -1225,24 +1267,40 @@ class CommentModal(ModalScreen):
         Binding("ctrl+s", "submit", show=False),
     ]
 
-    def __init__(self, title: str) -> None:
+    """A multi-line text box: dismisses with the stripped text (possibly "")
+    on ctrl+s, or None on cancel. Comments by default; the description editor
+    reuses it with the current text prefilled."""
+
+    def __init__(
+        self,
+        title: str,
+        text: str = "",
+        button: str = " comment",
+        verb: str = "send",
+    ) -> None:
         super().__init__()
         self._title = title
+        self._text = text
+        self._button = button
+        self._verb = verb
 
     def compose(self) -> ComposeResult:
         with Vertical(id="comment-box"):
             yield Static(self._title, id="comment-title")
-            yield TextArea(id="comment-input")
+            yield TextArea(self._text, id="comment-input")
             with Horizontal(id="comment-actions"):
                 yield Static(
-                    f"[{C_DIM}]ctrl+s to send · esc to cancel[/]", id="comment-hint"
+                    f"[{C_DIM}]ctrl+s to {self._verb} · esc to cancel[/]",
+                    id="comment-hint",
                 )
                 yield Button("cancel", id="comment-cancel")
-                yield Button(" comment", variant="primary", id="comment-send")
+                yield Button(self._button, variant="primary", id="comment-send")
 
     def on_mount(self) -> None:
         pop_in(self.query_one("#comment-box"))
-        self.query_one("#comment-input").focus()
+        area = self.query_one("#comment-input", TextArea)
+        area.focus()
+        area.move_cursor(area.document.end)
 
     @on(Button.Pressed, "#comment-send")
     def _send(self) -> None:
@@ -1253,8 +1311,7 @@ class CommentModal(ModalScreen):
         self.dismiss(None)
 
     def action_submit(self) -> None:
-        text = self.query_one("#comment-input", TextArea).text.strip()
-        self.dismiss(text or None)
+        self.dismiss(self.query_one("#comment-input", TextArea).text.strip())
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -2640,6 +2697,28 @@ class LTUI(App):
         if self._detail_issue and self._detail_issue["id"] == issue["id"]:
             self.load_comments(issue)
 
+    @work(group="mutate")
+    async def apply_description(self, issue: dict, description: str) -> None:
+        try:
+            data = await self.gql(
+                M_DESCRIPTION, {"id": issue["id"], "description": description}
+            )
+            updated = data["issueUpdate"]["issue"]
+        except Exception as e:
+            self.notify(f"update failed: {e}", severity="error")
+            return
+        issue["description"] = updated.get("description") or ""
+        if updated.get("updatedAt"):
+            issue["updatedAt"] = updated["updatedAt"]
+        self._write_team_cache()
+        self.render_issues(keep=issue["id"])
+        if self._detail_issue and self._detail_issue["id"] == issue["id"]:
+            self.query_one("#d-desc", Markdown).update(
+                issue["description"] or "*no description*"
+            )
+            self._update_detail_meta(issue)
+        self.notify(f" {issue['identifier']} description updated")
+
     # ── rendering ─────────────────────────────────────────────────────
     def render_issues(self, keep: str | None = None) -> None:
         ol = self.query_one("#issues", NavList)
@@ -3524,6 +3603,51 @@ class LTUI(App):
 
         self.push_screen(CommentModal(f" comment on {issue['identifier']}"), done)
 
+    def action_edit_description(self) -> None:
+        """Edit the description in $VISUAL / $EDITOR (the app suspends while
+        it runs), or in an in-app box when neither is set or the terminal
+        can't hand over control."""
+        issue = self._current_issue()
+        if not issue:
+            return
+        current = (issue.get("description") or "").strip()
+
+        def done(text: str | None) -> None:
+            # None is a cancel; "" clears the description.
+            if text is None:
+                return
+            text = text.strip()
+            if text == current:
+                self.notify(f" {issue['identifier']} description unchanged")
+                return
+            self.apply_description(issue, text)
+
+        editor = preferred_editor()
+        if editor:
+            try:
+                with self.suspend():
+                    text = edit_in_editor(editor, current + "\n" if current else "")
+            except SuspendNotSupported:
+                pass  # e.g. textual-web: use the in-app box instead
+            except OSError as e:
+                self.notify(f"couldn't start {editor[0]}: {e}", severity="error")
+                return
+            else:
+                if text is None:
+                    self.notify(f"{editor[0]} exited with an error; nothing saved",
+                                severity="warning")
+                done(text)
+                return
+        self.push_screen(
+            CommentModal(
+                f" description · {issue['identifier']}",
+                text=current,
+                button=" save",
+                verb="save",
+            ),
+            done,
+        )
+
     def action_open_browser(self) -> None:
         issue = self._current_issue()
         if issue and issue.get("url"):
@@ -3691,7 +3815,7 @@ auth: LINEAR_API_KEY env var, ~/.config/ltui/config.toml, or
       linear-cli's config. no key? ltui asks on first launch.
 
 keys: enter open ticket   n new   s status   p priority   d due date
-      c comment
+      c comment   e edit description ($VISUAL / $EDITOR)
       a assign   l labels   P project   o browser   y yank   / filter
       x run ~/.linear/coding-tools.json custom script on the ticket
         (more scripts, each with its own key: "scripts" in config.json)
