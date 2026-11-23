@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -1681,6 +1682,45 @@ class WelcomeModal(ModalScreen):
         app.call_later(app.action_help)
 
 
+def native_copy_command() -> list[str] | None:
+    """The local clipboard tool, or None over SSH (the remote's clipboard
+    isn't the user's) or when there isn't one. Used alongside OSC 52, which
+    terminals and tmux (set-clipboard external, its default) often ignore."""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return None
+    if sys.platform == "darwin":
+        candidates = [["pbcopy"]]
+    else:
+        candidates = []
+        if os.environ.get("WAYLAND_DISPLAY"):
+            candidates.append(["wl-copy"])
+        if os.environ.get("DISPLAY"):
+            candidates += [["xclip", "-selection", "clipboard"],
+                           ["xsel", "--clipboard", "--input"]]
+    for cmd in candidates:
+        if shutil.which(cmd[0]):
+            return cmd
+    return None
+
+
+def copy_natively(text: str) -> bool:
+    """Put `text` on the local clipboard with the platform's tool. False when
+    there's no tool or it failed; OSC 52 is still sent either way."""
+    cmd = native_copy_command()
+    if cmd is None:
+        return False
+    try:
+        # wl-copy / xclip fork to keep owning the selection; DEVNULL so they
+        # don't hold a pipe open and block us
+        result = subprocess.run(
+            cmd, input=text.encode(), timeout=2,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def hint_markup() -> str:
     return (
         f"[@click=app.change_status][{C_BLUE}]s[/] [{C_DIM}]status[/][/]  "
@@ -1695,6 +1735,13 @@ def hint_markup() -> str:
 
 class LTUI(App):
     TITLE = "ltui"
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """OSC 52 (Textual's way, and the only one that reaches the user's
+        clipboard over SSH), plus the local clipboard tool when there is
+        one, since tmux and some terminals drop OSC 52 from applications."""
+        super().copy_to_clipboard(text)
+        copy_natively(text)
 
     BINDINGS = build_bindings()
 
