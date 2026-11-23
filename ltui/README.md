@@ -161,6 +161,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `x`      | **run your custom script** on the ticket — [add more](#more-scripts) |
 | `/`      | filter issues                                 |
 | `m`      | toggle **mine only**                          |
+| `C`      | **clear every filter** — project, mine only and `/` text — at once |
 | `v`      | cycle grouping: **status → project → initiative** |
 | `S`      | sort within groups: **recent ↔ priority**     |
 | `V`      | filter to a **single project**                |
