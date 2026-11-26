@@ -164,6 +164,7 @@ and `?` opens the full keybinding cheatsheet whenever you need it.
 | `v`      | cycle grouping: **status → project → initiative** |
 | `S`      | sort within groups: **recent ↔ priority**     |
 | `V`      | filter to a **single project**                |
+| `b`      | show / hide the **teams sidebar**             |
 | `t`      | cycle **theme**                               |
 | `,`      | open **settings**                             |
 | `r`      | refresh                                       |
