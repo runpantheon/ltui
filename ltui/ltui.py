@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tomllib
 import webbrowser
+from collections.abc import Iterable
 from functools import partial
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -614,6 +615,7 @@ HELP_SECTIONS = [
         ("g / G", "jump to top / bottom"),
         ("enter", "open ticket detail (click works too)"),
         ("esc", "close panel · dismiss modal · clear filter"),
+        ("/ in a picker", "filter its list (esc clears, enter picks)"),
     ]),
     ("ticket", [
         (("new_ticket",), "new ticket in the current team"),
@@ -640,7 +642,7 @@ HELP_SECTIONS = [
     ]),
     ("app", [
         (("help",), "this help"),
-        ("ctrl+n / ctrl+p", "next / previous inside the command palette"),
+        ("ctrl+n / ctrl+p", "next / previous in the command palette or a picker"),
         (("quit",), "quit"),
     ]),
 ]
@@ -1118,26 +1120,115 @@ class Splitter(Static):
                 save_layout(reset=self._target)
 
 
-class PickerModal(ModalScreen):
-    BINDINGS = [Binding("escape", "cancel", show=False)]
+class PickerSearch(Input):
+    """The picker's `/` filter. Arrows and enter drive the list below while
+    the cursor stays here; esc clears the filter rather than closing."""
 
-    def __init__(self, title: str, options: list[Option]) -> None:
+    BINDINGS = [
+        Binding("escape", "clear_search", show=False),
+        Binding("down", "screen.move(1)", show=False),
+        Binding("up", "screen.move(-1)", show=False),
+    ]
+
+    def action_clear_search(self) -> None:
+        self.screen.close_search()
+
+
+class PickerModal(ModalScreen):
+    """A list to pick one option from. `/` opens a filter; options whose ids
+    are in `pinned` stay visible while it's narrowing (e.g. "all projects"),
+    and `match_text` overrides the text an option is matched on (by default
+    its visible label)."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("slash", "search", show=False),
+        # screen bindings beat the app's ctrl+p (command palette)
+        Binding("ctrl+n", "move(1)", show=False),
+        Binding("ctrl+p", "move(-1)", show=False),
+    ]
+
+    def __init__(
+        self,
+        title: str,
+        options: list[Option],
+        pinned: Iterable[str] = (),
+        match_text: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._options = options
+        self._pinned = set(pinned)
+        self._match_text = match_text or {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
             yield Static(self._title, id="picker-title")
+            yield PickerSearch(placeholder="filter…", id="picker-search")
             yield NavList(*self._options, id="picker-list")
 
     def on_mount(self) -> None:
         pop_in(self.query_one("#picker-box"))
         self.query_one("#picker-list").focus()
 
+    def _text_for(self, option: Option) -> str:
+        if option.id in self._match_text:
+            return self._match_text[option.id]
+        prompt = option.prompt
+        return prompt.plain if isinstance(prompt, Text) else str(prompt)
+
+    def visible_options(self, query: str) -> list[Option]:
+        query = query.strip().lower()
+        if not query:
+            return list(self._options)
+        return [
+            o for o in self._options
+            if o.id in self._pinned or query in self._text_for(o).lower()
+        ]
+
+    @on(Input.Changed, "#picker-search")
+    def _filter(self, event: Input.Changed) -> None:
+        shown = self.visible_options(event.value)
+        ol = self.query_one("#picker-list", NavList)
+        ol.clear_options()
+        ol.add_options(
+            Option(o.prompt, id=o.id, disabled=o.disabled) for o in shown
+        )
+        # land on the first real match, not a pinned row above it
+        first = next(
+            (n for n, o in enumerate(shown)
+             if not o.disabled and (o.id not in self._pinned or not event.value.strip())),
+            next((n for n, o in enumerate(shown) if not o.disabled), None),
+        )
+        ol.highlighted = first
+
+    @on(Input.Submitted, "#picker-search")
+    def _submit(self) -> None:
+        ol = self.query_one("#picker-list", NavList)
+        if ol.highlighted is not None:
+            self.dismiss(ol.get_option_at_index(ol.highlighted).id)
+
     @on(OptionList.OptionSelected)
     def _selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
+
+    def action_search(self) -> None:
+        search = self.query_one("#picker-search", PickerSearch)
+        search.add_class("visible")
+        search.focus()
+
+    def close_search(self) -> None:
+        search = self.query_one("#picker-search", PickerSearch)
+        search.value = ""  # fires Changed, which restores the full list
+        search.remove_class("visible")
+        self.query_one("#picker-list").focus()
+
+    def action_move(self, step: int) -> None:
+        ol = self.query_one("#picker-list", NavList)
+        if step > 0:
+            ol.action_cursor_down()
+        else:
+            ol.action_cursor_up()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1777,6 +1868,12 @@ class LTUI(App):
     }}
     #picker-title {{ padding: 0 1 1 1; color: {C_SUB}; text-style: bold; }}
     #picker-list {{ height: auto; max-height: 14; }}
+    #picker-search {{
+        display: none; height: 3; margin: 0 0 1 0;
+        border: round $ltui-border; background: transparent;
+    }}
+    #picker-search.visible {{ display: block; }}
+    #picker-search:focus {{ border: round $ltui-border-focus; }}
 
     DueDateModal {{ align: center middle; background: $ltui-overlay; }}
     #duedate-box {{
@@ -3161,7 +3258,15 @@ class LTUI(App):
                 self._project_filter = choice.removeprefix("proj:")
             self.render_issues()
 
-        self.push_screen(PickerModal("filter by project", opts), done)
+        self.push_screen(
+            PickerModal(
+                "filter by project",
+                opts,
+                pinned={"all:", "proj:"},  # "proj:" is the no-project row
+                match_text={f"proj:{pid}": p["name"] for pid, p in projects.items()},
+            ),
+            done,
+        )
 
     def action_next_group(self) -> None:
         self._jump_group(forward=True)
@@ -3383,7 +3488,12 @@ class LTUI(App):
                     self.apply_project(issue, pid)
 
         self.push_screen(
-            PickerModal(f"move {issue['identifier']} to\u2026", opts), done
+            PickerModal(
+                f"move {issue['identifier']} to\u2026",
+                opts,
+                pinned={"new:", "none:"},
+            ),
+            done,
         )
 
     @work(group="mutate")
@@ -3706,6 +3816,9 @@ arrows: up/down move · left/right walk the panes teams - issues - detail
 vim:  j/k move   g/G ends   ctrl+d/u half page   ctrl+f/b page
       [ / ] previous / next group   : or ctrl+p command palette
       (inside it: ctrl+n / ctrl+p next / previous)
+
+pickers: / filters the list (project, assignee, status...) as you type;
+         ctrl+n / ctrl+p or arrows move, enter picks, esc clears
 
 mouse: everything clicks; drag the panel dividers to resize,
        double-click a divider to reset"""
